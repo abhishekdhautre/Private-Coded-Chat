@@ -5,11 +5,44 @@
 html, body { min-height: 100%; }
 body {
   margin: 0;
-  background: #05070b;
+  background: #070a0f;
   color: #eef2f7;
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
 }
 button, input, textarea { font: inherit; }
+
+main.flex {
+  background:
+    radial-gradient(circle at 50% -20%, rgba(22, 199, 223, 0.08), transparent 34rem),
+    #070a0f !important;
+}
+
+main.flex > header {
+  background: rgba(7, 10, 15, 0.92);
+  backdrop-filter: blur(14px);
+}
+
+main.flex > section > div > div {
+  width: fit-content;
+  min-width: 5rem;
+  max-width: min(78%, 42rem);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+main.flex > section > div > div.ml-auto {
+  border-color: rgba(34, 211, 238, 0.18);
+  background: rgba(7, 67, 82, 0.48);
+}
+
+main.flex > form {
+  background: rgba(7, 10, 15, 0.94);
+  backdrop-filter: blur(14px);
+}
+
+main.flex > form textarea {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+}
 
 @media (max-width: 640px) {
   body { overflow-x: hidden; }
@@ -26,7 +59,7 @@ button, input, textarea { font: inherit; }
   main.flex > header > div:last-child { width: 100%; }
   main.flex > header > div:last-child button { flex: 1; }
   main.flex > section { padding: 0.75rem; }
-  main.flex > section > div > div { max-width: 92%; padding: 0.75rem; }
+  main.flex > section > div > div { max-width: 90%; padding: 0.75rem; }
   main.flex > form { padding: 0.75rem; padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
   main.flex > form > div { align-items: stretch; }
   main.flex > form textarea { min-width: 0; }
