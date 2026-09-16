@@ -38,8 +38,13 @@ export async function deriveKey(passphrase: string, roomId: string): Promise<Cry
 
 export async function encrypt(plaintext: string, key: CryptoKey, aad?: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  const algorithm: AesGcmParams = {
+    name: "AES-GCM",
+    iv: toArrayBuffer(iv),
+  };
+  if (aad) algorithm.additionalData = toArrayBuffer(encoder.encode(aad));
   const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: toArrayBuffer(iv), additionalData: aad ? toArrayBuffer(encoder.encode(aad)) : undefined },
+    algorithm,
     key,
     toArrayBuffer(encoder.encode(plaintext))
   );
@@ -47,8 +52,13 @@ export async function encrypt(plaintext: string, key: CryptoKey, aad?: string) {
 }
 
 export async function decrypt(ciphertext: string, iv: string, key: CryptoKey, aad?: string): Promise<string> {
+  const algorithm: AesGcmParams = {
+    name: "AES-GCM",
+    iv: toArrayBuffer(base64ToBytes(iv)),
+  };
+  if (aad) algorithm.additionalData = toArrayBuffer(encoder.encode(aad));
   const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: toArrayBuffer(base64ToBytes(iv)), additionalData: aad ? toArrayBuffer(encoder.encode(aad)) : undefined },
+    algorithm,
     key,
     toArrayBuffer(base64ToBytes(ciphertext))
   );
