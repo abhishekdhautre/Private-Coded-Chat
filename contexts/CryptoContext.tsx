@@ -51,8 +51,16 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
         resetTimer();
       }
     };
+    const handlePageHide = () => {
+      lock();
+    };
+    const handleWindowBlur = () => {
+      lock();
+    };
 
     document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("pointerdown", resetTimer);
     window.addEventListener("keydown", resetTimer);
     window.addEventListener("touchstart", resetTimer);
@@ -61,6 +69,8 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
     return () => {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("pointerdown", resetTimer);
       window.removeEventListener("keydown", resetTimer);
       window.removeEventListener("touchstart", resetTimer);

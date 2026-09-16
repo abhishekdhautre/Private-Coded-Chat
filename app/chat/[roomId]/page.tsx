@@ -236,18 +236,19 @@ function ChatInner() {
 
   // Redirect if locked
   useEffect(() => {
-    if (!key) { setMessages([]); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }
+    if (!key) {
+      setMessages([]);
+      blobUrls.current.forEach(url => URL.revokeObjectURL(url));
+      blobUrls.current = [];
+      setPrivacyProtected(true);
+      router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
+    }
   }, [key, router, roomId]);
 
   // Blur on window focus loss (message list only)
   useEffect(() => {
     const onBlur = () => { setBlurred(true); setPrivacyProtected(true); };
-    const onFocus = () => {
-      if (document.visibilityState === "visible") {
-        setBlurred(false);
-        setPrivacyProtected(false);
-      }
-    };
+    const onFocus = () => setBlurred(true);
     const onVis = () => {
       if (document.visibilityState === "hidden") {
         setBlurred(true);
@@ -267,8 +268,11 @@ function ChatInner() {
 
   // Revoke blob URLs on unmount
   useEffect(() => {
-    return () => { blobUrls.current.forEach(u => URL.revokeObjectURL(u)); };
-  }, []);
+    return () => {
+      blobUrls.current.forEach(u => URL.revokeObjectURL(u));
+      lock();
+    };
+  }, [lock]);
 
   // Subscribe to messages
   useEffect(() => {
