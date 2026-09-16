@@ -382,13 +382,7 @@ function ChatInner() {
           </div>
           <p className="text-xs text-slate-500">End-to-end encrypted · {roomId}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setRevealed(v => !v)}
-            className="rounded-lg border border-white/10 px-3 py-2 text-sm"
-          >
-            {revealed ? "Revealed" : "Coded"}
-          </button>
+        <div className="chat-header-actions flex items-center gap-2">
           <button
             onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}
             className="rounded-lg border border-white/10 px-3 py-2 text-sm"
@@ -438,7 +432,7 @@ function ChatInner() {
 
       {/* Input bar */}
       <form onSubmit={send} className="border-t border-white/10 p-4 md:px-8">
-        <div className="mx-auto flex max-w-3xl gap-2 items-end">
+        <div className="mx-auto flex max-w-3xl flex-wrap gap-2 items-end">
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -457,6 +451,15 @@ function ChatInner() {
           >
             📎
           </button>
+
+          <div className="mode-switch order-last flex rounded-xl border border-white/10 bg-white/[.04] p-1" role="group" aria-label="Message display mode">
+            <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>
+              Coded
+            </button>
+            <button type="button" onClick={() => setRevealed(true)} className={revealed ? "mode-active" : "mode-option"}>
+              Revealed
+            </button>
+          </div>
 
           <textarea
             value={input}

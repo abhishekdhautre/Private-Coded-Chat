@@ -85,14 +85,13 @@ main.flex > form textarea {
   main.grid > form input,
   main.grid > section input { margin-top: 0.75rem; }
   main.flex > header { flex-wrap: wrap; gap: 0.75rem; padding: 0.75rem 1rem; }
-  main.flex > header > div:last-child { width: 100%; }
-  main.flex > header > div:last-child button { flex: 1; }
+  main.flex > header > .chat-header-actions { width: auto; }
   main.flex > section { padding: 0.75rem; }
   main.flex > section > div > div { max-width: 90%; padding: 0.75rem; }
   main.flex > form { padding: 0.75rem; padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
   main.flex > form > div { align-items: stretch; }
   main.flex > form textarea { min-width: 0; }
   main.flex > form button { flex-shrink: 0; padding-inline: 1rem; }
-  main.flex > form .mode-switch { width: 100%; }
+  main.flex > form .mode-switch { width: auto; }
   main.flex > form .mode-switch button { flex: 1; }
 }
