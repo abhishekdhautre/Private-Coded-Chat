@@ -432,7 +432,7 @@ function ChatInner() {
 
       {/* Input bar */}
       <form onSubmit={send} className="chat-composer border-t border-white/10 p-4 md:px-8">
-        <div className="mx-auto flex max-w-3xl flex-wrap gap-2 items-end">
+        <div className="composer-layout mx-auto flex max-w-3xl flex-wrap gap-2 items-end">
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -475,7 +475,7 @@ function ChatInner() {
 
           <button
             disabled={sending || (!input.trim() && !mediaFile)}
-            className="order-4 rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="composer-send order-4 rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {sending ? "…" : "Send"}
           </button>

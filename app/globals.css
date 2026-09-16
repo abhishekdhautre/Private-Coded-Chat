@@ -70,6 +70,10 @@ button, input, textarea { font: inherit; }
 .chat-bubble-outgoing { background: var(--chat-green); border-top-right-radius: 0.15rem; }
 .chat-meta { color: rgba(174, 197, 204, 0.8); }
 
+@media print {
+  body { display: none !important; }
+}
+
 main.flex {
   background:
     radial-gradient(circle at 50% -20%, rgba(22, 199, 223, 0.08), transparent 34rem),
@@ -153,4 +157,20 @@ main.flex > form textarea {
   main.flex > form button { flex-shrink: 0; padding-inline: 1rem; }
   main.flex > form .mode-switch { width: auto; }
   main.flex > form .mode-switch button { flex: 1; }
+  .chat-composer .composer-layout {
+    display: grid;
+    grid-template-columns: 3rem minmax(0, 1fr) 4.25rem;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .chat-composer .composer-icon { grid-column: 1; grid-row: 1; }
+  .chat-composer textarea { grid-column: 2; grid-row: 1; width: 100%; }
+  .chat-composer .composer-layout > .mode-switch {
+    grid-column: 2 / 4;
+    grid-row: 2;
+    width: 100%;
+  }
+  .chat-composer .composer-layout > .mode-switch button { flex: 1; }
+  .chat-composer .composer-send { grid-column: 3; grid-row: 1; min-width: 0; padding-inline: 0.5rem; }
+  .chat-composer .composer-layout > input { display: none; }
 }
