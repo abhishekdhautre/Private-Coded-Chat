@@ -402,7 +402,7 @@ function ChatInner() {
 
   return (
     <main
-      className="chat-shell flex min-h-[100dvh] flex-col bg-[#05070b]"
+      className="chat-page chat-shell flex min-h-[100dvh] flex-col bg-[#05070b]"
       // CSS-level screenshot deterrence: disable selection and drag
       style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}
     >
@@ -427,7 +427,7 @@ function ChatInner() {
 
       {/* Message list */}
       <section
-        className={`chat-messages flex-1 overflow-y-auto p-4 transition duration-100 md:p-8 ${blurred ? "blur-xl pointer-events-none" : ""}`}
+        className={`sensitive-chat-content messages-container chat-messages flex-1 overflow-y-auto p-4 transition duration-100 md:p-8 ${blurred ? "blur-xl pointer-events-none" : ""}`}
         aria-label="Message list"
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-3">
@@ -464,7 +464,7 @@ function ChatInner() {
       )}
 
       {/* Input bar */}
-      <form onSubmit={send} className="chat-composer border-t border-white/10 p-4 md:px-8">
+      <form onSubmit={send} className="message-composer chat-composer border-t border-white/10 p-4 md:px-8">
         <div className="composer-layout mx-auto flex max-w-3xl flex-wrap gap-2 items-end">
           {/* Hidden file input */}
           <input

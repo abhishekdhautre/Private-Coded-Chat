@@ -25,8 +25,18 @@ button, input, textarea { font: inherit; }
   max-width: 100%;
 }
 
+.chat-page {
+  height: 100dvh;
+  min-height: 100dvh;
+  max-height: 100lvh;
+  overflow: hidden;
+}
+
 .chat-header {
   min-height: 4.5rem;
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
   background: var(--chat-panel) !important;
   border-color: rgba(233, 237, 239, 0.08) !important;
 }
@@ -42,6 +52,7 @@ button, input, textarea { font: inherit; }
 }
 
 .chat-messages {
+  flex: 1 1 auto;
   min-height: 0;
   overscroll-behavior: contain;
   background-color: var(--chat-bg);
@@ -71,7 +82,10 @@ button, input, textarea { font: inherit; }
 
 .chat-bubble {
   width: fit-content;
-  min-width: 5.5rem;
+  max-width: min(70%, 700px);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   border: 1px solid rgba(233, 237, 239, 0.08);
   border-radius: 0.55rem;
   padding: 0.5rem 0.65rem 0.35rem;
@@ -81,6 +95,13 @@ button, input, textarea { font: inherit; }
 .chat-bubble-incoming { background: var(--chat-incoming); border-top-left-radius: 0.15rem; }
 .chat-bubble-outgoing { background: var(--chat-green); border-top-right-radius: 0.15rem; }
 .chat-meta { color: rgba(174, 197, 204, 0.8); }
+
+.message-composer {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+}
 
 .privacy-overlay {
   position: fixed;
@@ -109,45 +130,12 @@ button, input, textarea { font: inherit; }
 .privacy-overlay-icon { font-size: 2rem; }
 
 @media print {
-  body { display: none !important; }
+  body, .sensitive-chat-content, .message-composer, .chat-header { display: none !important; }
 }
 
 @media (min-width: 641px) {
   .chat-shell { min-height: 100vh; }
   .chat-messages { padding-inline: clamp(1rem, 5vw, 5rem); }
-}
-
-main.flex {
-  background:
-    radial-gradient(circle at 50% -20%, rgba(22, 199, 223, 0.08), transparent 34rem),
-    #070a0f !important;
-}
-
-main.flex > header {
-  background: rgba(7, 10, 15, 0.92);
-  backdrop-filter: blur(14px);
-}
-
-main.flex > section > div > div {
-  width: fit-content;
-  min-width: 5rem;
-  max-width: min(78%, 42rem);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
-}
-
-main.flex > section > div > div.ml-auto {
-  border-color: rgba(34, 211, 238, 0.18);
-  background: rgba(7, 67, 82, 0.48);
-}
-
-main.flex > form {
-  background: rgba(7, 10, 15, 0.94);
-  backdrop-filter: blur(14px);
-}
-
-main.flex > form textarea {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.045);
 }
 
 .mode-switch {
@@ -191,7 +179,7 @@ main.flex > form textarea {
   main.grid > form input,
   main.grid > section input { margin-top: 0.75rem; }
   .chat-shell { width: 100%; min-width: 0; overflow: hidden; }
-  .chat-shell > .chat-header { flex-wrap: nowrap; gap: 0.5rem; padding: 0.55rem 0.75rem; }
+  .chat-shell > .chat-header { flex-wrap: nowrap; gap: 0.5rem; padding-top: max(0.55rem, env(safe-area-inset-top)); padding-bottom: 0.55rem; padding-left: max(0.75rem, env(safe-area-inset-left)); padding-right: max(0.75rem, env(safe-area-inset-right)); }
   .chat-shell > .chat-header > div:first-child { min-width: 0; }
   .chat-shell > .chat-header .font-semibold { font-size: 0.9rem; }
   .chat-shell > .chat-header .text-xs { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -200,7 +188,7 @@ main.flex > form textarea {
   .chat-shell > .chat-messages { min-width: 0; padding: 0.5rem 0.65rem; }
   .chat-shell .chat-messages > div { width: 100%; max-width: none; min-width: 0; }
   .chat-shell .chat-row { width: 100%; min-width: 0; }
-  .chat-shell .chat-bubble { max-width: min(88%, 22rem); min-width: 0; overflow-wrap: anywhere; }
+  .chat-shell .chat-bubble { max-width: 85%; }
   .chat-shell .chat-bubble img,
   .chat-shell .chat-bubble video { display: block; width: min(100%, 15rem); max-width: 100%; height: auto; }
   .chat-shell > div.border-t { min-width: 0; padding: 0.65rem 0.75rem; }
