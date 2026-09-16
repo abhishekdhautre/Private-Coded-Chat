@@ -110,8 +110,8 @@ function MessageBubble({
   return (
     <div className={`relative flex flex-col ${isMine ? "items-end" : "items-start"}`}>
       <div
-        className={`max-w-[85%] rounded-2xl border border-white/10 px-4 py-3 select-none ${
-          isMine ? "bg-cyan-400/10" : "bg-white/[.04]"
+        className={`chat-bubble max-w-[85%] select-none ${
+          isMine ? "chat-bubble-outgoing" : "chat-bubble-incoming"
         }`}
         onMouseDown={startLongPress}
         onMouseUp={cancelLongPress}
@@ -150,7 +150,7 @@ function MessageBubble({
           <p className="whitespace-pre-wrap break-words text-sm leading-6">{display}</p>
         )}
 
-        <div className="mt-1 flex items-center gap-2">
+        <div className="chat-meta mt-1 flex items-center justify-end gap-2">
           <span className="text-[10px] text-slate-500">
             {new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
@@ -369,15 +369,15 @@ function ChatInner() {
 
   return (
     <main
-      className="flex min-h-screen flex-col bg-[#05070b]"
+      className="chat-shell flex min-h-screen flex-col bg-[#05070b]"
       // CSS-level screenshot deterrence: disable selection and drag
       style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}
     >
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-white/10 px-4 py-4 md:px-8">
+      <header className="chat-header flex items-center justify-between border-b border-white/10 px-4 py-4 md:px-8">
         <div>
           <div className="flex items-center gap-2">
-            <span className="text-lg">🔐</span>
+            <span className="chat-avatar">🔐</span>
             <span className="font-semibold">Private room</span>
           </div>
           <p className="text-xs text-slate-500">End-to-end encrypted · {roomId}</p>
@@ -394,7 +394,7 @@ function ChatInner() {
 
       {/* Message list */}
       <section
-        className={`flex-1 overflow-y-auto p-4 transition duration-100 md:p-8 ${blurred ? "blur-xl pointer-events-none" : ""}`}
+        className={`chat-messages flex-1 overflow-y-auto p-4 transition duration-100 md:p-8 ${blurred ? "blur-xl pointer-events-none" : ""}`}
         aria-label="Message list"
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-3">
@@ -431,7 +431,7 @@ function ChatInner() {
       )}
 
       {/* Input bar */}
-      <form onSubmit={send} className="border-t border-white/10 p-4 md:px-8">
+      <form onSubmit={send} className="chat-composer border-t border-white/10 p-4 md:px-8">
         <div className="mx-auto flex max-w-3xl flex-wrap gap-2 items-end">
           {/* Hidden file input */}
           <input
@@ -445,14 +445,14 @@ function ChatInner() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="rounded-xl border border-white/10 px-3 py-3 text-slate-400 hover:text-cyan-400 hover:border-cyan-400/40 transition-colors"
+            className="order-1 rounded-xl border border-white/10 px-3 py-3 text-slate-400 hover:text-cyan-400 hover:border-cyan-400/40 transition-colors"
             title="Attach photo or video (expires in 30s)"
             aria-label="Attach media"
           >
             📎
           </button>
 
-          <div className="mode-switch order-last flex rounded-xl border border-white/10 bg-white/[.04] p-1" role="group" aria-label="Message display mode">
+          <div className="mode-switch order-3 flex rounded-xl border border-white/10 bg-white/[.04] p-1" role="group" aria-label="Message display mode">
             <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>
               Coded
             </button>
@@ -469,13 +469,13 @@ function ChatInner() {
             }}
             rows={1}
             placeholder={mediaFile ? "Add a caption… (optional)" : "Write a message…"}
-            className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/[.04] px-4 py-3 outline-none focus:border-cyan-400"
+            className="order-2 min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/[.04] px-4 py-3 outline-none focus:border-cyan-400"
             style={{ userSelect: "text" } as React.CSSProperties}
           />
 
           <button
             disabled={sending || (!input.trim() && !mediaFile)}
-            className="rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="order-4 rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {sending ? "…" : "Send"}
           </button>
