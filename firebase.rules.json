@@ -13,6 +13,7 @@
           }
         },
         "messages": {
+          ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
           "$messageId": {
             ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
             ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid) && ((!data.exists() && newData.exists() && newData.child('senderId').val() == auth.uid) || (data.exists() && !newData.exists() && data.child('senderId').val() == auth.uid))",
