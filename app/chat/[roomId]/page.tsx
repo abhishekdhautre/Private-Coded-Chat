@@ -108,7 +108,7 @@ function MessageBubble({
   };
 
   return (
-    <div className={`relative flex flex-col ${isMine ? "items-end" : "items-start"}`}>
+    <div className={`chat-row relative flex w-full flex-col ${isMine ? "items-end" : "items-start"}`}>
       <div
         className={`chat-bubble max-w-[85%] select-none ${
           isMine ? "chat-bubble-outgoing" : "chat-bubble-incoming"
