@@ -125,7 +125,7 @@ function MessageBubble({
   };
 
   return (
-    <div className={`chat-row relative flex w-full flex-col min-w-0 ${isMine ? "items-end" : "items-start"}`}>
+    <div className={`message-row ${isMine ? "items-end" : "items-start"}`}>
       <div
         className={`chat-bubble select-none ${
           isMine ? "chat-bubble-outgoing" : "chat-bubble-incoming"
@@ -402,28 +402,28 @@ function ChatInner() {
 
   return (
     <main
-      className="chat-page chat-shell"
+      className="chat-page"
       style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}
     >
       {/* Header */}
       <header className="chat-header">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="header-info">
           <span className="chat-avatar">🔐</span>
-          <div className="min-w-0 flex-1">
-            <h1 className="font-semibold text-sm sm:text-base text-slate-100 truncate leading-tight">
+          <div className="header-text">
+            <h1 className="header-title">
               Private room
             </h1>
-            <p className="text-xs text-slate-500 truncate leading-tight">
+            <p className="header-subtitle">
               <span className="hidden sm:inline">End-to-end encrypted · </span>
               <span className="sm:hidden">Encrypted · </span>
               <span className="font-mono">{roomId}</span>
             </p>
           </div>
         </div>
-        <div className="chat-header-actions flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
             onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}
-            className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5 transition"
+            className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5 transition flex-shrink-0"
           >
             Lock
           </button>
@@ -435,7 +435,7 @@ function ChatInner() {
         className={`sensitive-chat-content messages-container chat-messages ${blurred ? "blur-xl pointer-events-none" : ""}`}
         aria-label="Message list"
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-3 min-w-0">
+        <div className="messages-inner">
           {messages.map(m => (
             <MessageBubble
               key={m.id}
@@ -470,9 +470,9 @@ function ChatInner() {
 
       {/* Input bar */}
       <form onSubmit={send} className="message-composer chat-composer">
-        <div className="mx-auto flex max-w-3xl flex-col gap-2 min-w-0">
+        <div className="composer-container">
           {/* Row 1: Attachment, Input, Desktop Mode Switch, Send */}
-          <div className="flex items-end gap-2 w-full min-w-0">
+          <div className="composer-main">
             {/* Hidden file input */}
             <input
               ref={fileInputRef}
@@ -485,7 +485,7 @@ function ChatInner() {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-white/10 text-slate-400 hover:text-cyan-400 hover:border-cyan-400/40 transition-colors"
+              className="btn-attachment"
               title="Attach photo or video (expires in 30s)"
               aria-label="Attach media"
             >
@@ -501,12 +501,12 @@ function ChatInner() {
               }}
               rows={1}
               placeholder={mediaFile ? "Add a caption… (optional)" : "Write a message…"}
-              className="min-h-11 flex-1 resize-none rounded-xl border border-transparent bg-[#2a3942] px-4 py-2.5 text-sm text-slate-100 placeholder-slate-400 outline-none focus:border-cyan-400/50"
+              className="composer-input"
               style={{ userSelect: "text" } as React.CSSProperties}
             />
 
-            {/* Coded/Revealed Toggle - Desktop */}
-            <div className="hidden sm:inline-flex mode-switch flex-shrink-0" role="group" aria-label="Message display mode">
+            {/* Coded/Revealed Toggle - Desktop (hidden on <= 600px) */}
+            <div className="mode-switch mode-switch-desktop" role="group" aria-label="Message display mode">
               <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>
                 Coded
               </button>
@@ -518,14 +518,14 @@ function ChatInner() {
             {/* Send button */}
             <button
               disabled={sending || (!input.trim() && !mediaFile)}
-              className="flex h-11 flex-shrink-0 items-center justify-center rounded-xl bg-cyan-400 px-5 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed text-sm"
+              className="btn-send"
             >
               {sending ? "…" : "Send"}
             </button>
           </div>
 
-          {/* Row 2: Coded/Revealed Toggle - Mobile */}
-          <div className="sm:hidden mode-switch w-full" role="group" aria-label="Message display mode mobile">
+          {/* Row 2: Coded/Revealed Toggle - Mobile (visible on <= 600px) */}
+          <div className="mode-switch mode-switch-mobile" role="group" aria-label="Message display mode mobile">
             <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>
               Coded
             </button>
