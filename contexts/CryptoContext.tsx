@@ -36,6 +36,7 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!key) return;
     const autoLockMinutes = Number(process.env.NEXT_PUBLIC_AUTO_LOCK_MINUTES ?? "5");
     const timeoutMs = (Number.isFinite(autoLockMinutes) && autoLockMinutes > 0 ? autoLockMinutes : 5) * 60_000;
     let timer: ReturnType<typeof setTimeout>;
@@ -64,7 +65,7 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("keydown", resetTimer);
       window.removeEventListener("touchstart", resetTimer);
     };
-  }, [lock]);
+  }, [key, lock]);
 
   const value = useMemo(
     () => ({
