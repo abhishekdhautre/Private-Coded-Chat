@@ -1,0 +1,27 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        "meta": {
+          ".read": "auth != null && data.exists() && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid)",
+          ".write": "auth != null && ((!data.exists() && newData.exists() && (newData.child('participants').child('0').val() == auth.uid || newData.child('participants').child('1').val() == auth.uid)) || (data.exists() && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid) && newData.val() == data.val()))",
+          ".validate": "newData.hasChildren(['participants','keyCheck']) && newData.child('participants').hasChildren(['0','1']) && !newData.child('participants').child('2').exists() && newData.child('participants').child('0').isString() && newData.child('participants').child('1').isString() && newData.child('participants').child('0').val() != newData.child('participants').child('1').val() && newData.child('keyCheck').hasChildren(['ciphertext','iv']) && newData.child('keyCheck').child('ciphertext').isString() && newData.child('keyCheck').child('iv').isString()",
+          "participants": {
+            "$participantId": {
+              ".validate": "$participantId == '0' || $participantId == '1'"
+            }
+          }
+        },
+        "messages": {
+          "$messageId": {
+            ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid) && ((!data.exists() && newData.exists() && newData.child('senderId').val() == auth.uid) || (data.exists() && !newData.exists() && data.child('senderId').val() == auth.uid))",
+            ".validate": "newData.hasChildren(['ciphertext','iv','senderId','timestamp']) && newData.child('ciphertext').isString() && newData.child('iv').isString() && newData.child('senderId').isString() && newData.child('timestamp').isNumber() && (!newData.hasChild('expiresAt') || newData.child('expiresAt').isNumber())"
+          }
+        },
+        ".read": "false",
+        ".write": "false"
+      }
+    }
+  }
+}
