@@ -8,7 +8,7 @@ A two-person real-time chat built with Next.js App Router, TypeScript, Tailwind 
 - The room passphrase is turned into an AES-256-GCM key with PBKDF2, 100,000 iterations, SHA-256, using the room ID as the salt.
 - The derived key and display keyword exist only in JavaScript memory. They are not stored in localStorage/sessionStorage/cookies and are never written to Firebase.
 - Every message gets a fresh 12-byte random AES-GCM IV.
-- Firebase stores only ciphertext, IV, sender UID, timestamp, and optional expiry metadata.
+- Firebase stores only ciphertext, IV, sender UID, timestamp, optional expiry metadata, and AES-encrypted media bytes. No plaintext or raw media is ever written to Firebase.
 - Plaintext is decrypted only in the browser and is then transformed by a separate keyed display cipher before being rendered.
 - Coded text is the default display. Reveal is local and requires no network request.
 - The message list blurs when the window loses focus.
@@ -92,11 +92,14 @@ npm test
 
 ```text
 /rooms/{roomId}/messages/{messageId}
-  ciphertext: string
-  iv: string
+  ciphertext: string          # AES-GCM encrypted text
+  iv: string                  # 12-byte random IV (base64)
   senderId: string
   timestamp: number
-  expiresAt: number | null
+  expiresAt: number | null    # set to timestamp+30000 for media messages
+  mediaType: "image"|"video"  # present only for media messages
+  mediaData: string           # AES-GCM encrypted file bytes (base64)
+  mediaIv: string             # IV for mediaData
 
 /rooms/{roomId}/meta
   participants:
@@ -107,4 +110,11 @@ npm test
     iv: "..."
 ```
 
-No plaintext message field is used anywhere in the Firebase model.
+No plaintext message field or raw media is used anywhere in the Firebase model.
+
+## Chat features
+
+- **Delete for everyone** — tap ⋯ on any sent message to remove it from Firebase for both participants. Long-press also opens the menu on touch devices.
+- **Photo & video sharing** — tap 📎 to attach an image or video (max 5 MB). The file is AES-256-GCM encrypted in the browser before upload.
+- **30-second media expiry** — media messages set `expiresAt = now + 30s`. Both the client sweep (every 1 s) and the server-side Firebase read path enforce deletion. Expired media is removed from Firebase and blob URLs are revoked.
+- **Screenshot prevention** — `Permissions-Policy: display-capture=()` blocks `getDisplayMedia()` at the HTTP level. PrintScreen and Meta+Shift+3/4 key combos briefly blank the page. The message list blurs on window focus loss. CSS `user-select: none` and `draggable=false` on media prevent trivial copy/drag. Full OS-level screenshot blocking is not possible in web apps.

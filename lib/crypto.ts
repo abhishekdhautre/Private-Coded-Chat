@@ -47,32 +47,39 @@ export async function deriveKey(passphrase: string, roomId: string): Promise<Cry
 export async function encrypt(plaintext: string, key: CryptoKey, aad?: string) {
   const webCrypto = requireWebCrypto();
   const iv = webCrypto.getRandomValues(new Uint8Array(12));
-  const algorithm: AesGcmParams = {
-    name: "AES-GCM",
-    iv: toArrayBuffer(iv),
-  };
+  const algorithm: AesGcmParams = { name: "AES-GCM", iv: toArrayBuffer(iv) };
   if (aad) algorithm.additionalData = toArrayBuffer(encoder.encode(aad));
-  const ciphertext = await webCrypto.subtle.encrypt(
-    algorithm,
-    key,
-    toArrayBuffer(encoder.encode(plaintext))
-  );
+  const ciphertext = await webCrypto.subtle.encrypt(algorithm, key, toArrayBuffer(encoder.encode(plaintext)));
   return { ciphertext: bytesToBase64(new Uint8Array(ciphertext)), iv: bytesToBase64(iv) };
 }
 
 export async function decrypt(ciphertext: string, iv: string, key: CryptoKey, aad?: string): Promise<string> {
   const webCrypto = requireWebCrypto();
-  const algorithm: AesGcmParams = {
-    name: "AES-GCM",
-    iv: toArrayBuffer(base64ToBytes(iv)),
-  };
+  const algorithm: AesGcmParams = { name: "AES-GCM", iv: toArrayBuffer(base64ToBytes(iv)) };
   if (aad) algorithm.additionalData = toArrayBuffer(encoder.encode(aad));
-  const plaintext = await webCrypto.subtle.decrypt(
-    algorithm,
-    key,
-    toArrayBuffer(base64ToBytes(ciphertext))
-  );
+  const plaintext = await webCrypto.subtle.decrypt(algorithm, key, toArrayBuffer(base64ToBytes(ciphertext)));
   return decoder.decode(plaintext);
+}
+
+export async function encryptBytes(bytes: Uint8Array, key: CryptoKey): Promise<{ data: string; iv: string }> {
+  const webCrypto = requireWebCrypto();
+  const iv = webCrypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await webCrypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toArrayBuffer(iv) },
+    key,
+    toArrayBuffer(bytes)
+  );
+  return { data: bytesToBase64(new Uint8Array(encrypted)), iv: bytesToBase64(iv) };
+}
+
+export async function decryptBytes(data: string, iv: string, key: CryptoKey): Promise<Uint8Array> {
+  const webCrypto = requireWebCrypto();
+  const decrypted = await webCrypto.subtle.decrypt(
+    { name: "AES-GCM", iv: toArrayBuffer(base64ToBytes(iv)) },
+    key,
+    toArrayBuffer(base64ToBytes(data))
+  );
+  return new Uint8Array(decrypted);
 }
 
 export async function createKeyCheck(key: CryptoKey): Promise<{ ciphertext: string; iv: string }> {
