@@ -34,7 +34,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `https://localhost:3000` on the development computer. For another device on the same network, open `https://YOUR_COMPUTER_IP:3000`. Next.js may ask to install or trust its development certificate on the first HTTPS start. Web Crypto requires HTTPS on LAN devices; plain `http://192.168.x.x` cannot create or unlock rooms.
 
 ## 3. Deploy Realtime Database rules
 
