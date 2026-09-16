@@ -10,3 +10,25 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 button, input, textarea { font: inherit; }
+
+@media (max-width: 640px) {
+  body { overflow-x: hidden; }
+  input, textarea, button { min-height: 48px; }
+  main { min-height: 100dvh !important; }
+  main.grid { padding: 1rem !important; }
+  main.grid > form,
+  main.grid > section { padding: 1.25rem !important; border-radius: 1rem; }
+  main.grid > form h1,
+  main.grid > section h1 { font-size: 1.75rem; line-height: 1.15; }
+  main.grid > form input,
+  main.grid > section input { margin-top: 0.75rem; }
+  main.flex > header { flex-wrap: wrap; gap: 0.75rem; padding: 0.75rem 1rem; }
+  main.flex > header > div:last-child { width: 100%; }
+  main.flex > header > div:last-child button { flex: 1; }
+  main.flex > section { padding: 0.75rem; }
+  main.flex > section > div > div { max-width: 92%; padding: 0.75rem; }
+  main.flex > form { padding: 0.75rem; padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+  main.flex > form > div { align-items: stretch; }
+  main.flex > form textarea { min-width: 0; }
+  main.flex > form button { flex-shrink: 0; padding-inline: 1rem; }
+}
