@@ -17,10 +17,12 @@ button, input, textarea { font: inherit; }
   --chat-green: #005c4b;
   --chat-incoming: #202c33;
   --chat-cyan: #21c4d6;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .chat-header {
-  min-height: 4.25rem;
+  min-height: 4.5rem;
   background: var(--chat-panel) !important;
   border-color: rgba(233, 237, 239, 0.08) !important;
 }
@@ -36,6 +38,8 @@ button, input, textarea { font: inherit; }
 }
 
 .chat-messages {
+  min-height: 0;
+  overscroll-behavior: contain;
   background-color: var(--chat-bg);
   background-image: radial-gradient(rgba(123, 152, 163, 0.09) 1px, transparent 1px), radial-gradient(rgba(123, 152, 163, 0.05) 1px, transparent 1px);
   background-position: 0 0, 18px 18px;
@@ -51,6 +55,7 @@ button, input, textarea { font: inherit; }
 }
 .chat-composer { background: var(--chat-panel); border-color: rgba(233, 237, 239, 0.08) !important; }
 .chat-composer > div { width: min(100%, 62rem); }
+.chat-composer { position: relative; z-index: 5; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
 .chat-composer textarea { border-color: transparent !important; background: #2a3942 !important; }
 .chat-composer textarea:focus { box-shadow: none; }
 .chat-composer .mode-switch { box-shadow: 0 0 0 1px rgba(33, 196, 214, 0.12); }
@@ -72,6 +77,11 @@ button, input, textarea { font: inherit; }
 
 @media print {
   body { display: none !important; }
+}
+
+@media (min-width: 641px) {
+  .chat-shell { min-height: 100vh; }
+  .chat-messages { padding-inline: clamp(1rem, 5vw, 5rem); }
 }
 
 main.flex {
@@ -148,13 +158,13 @@ main.flex > form textarea {
   main.grid > form input,
   main.grid > section input { margin-top: 0.75rem; }
   .chat-shell { width: 100%; min-width: 0; overflow: hidden; }
-  .chat-shell > .chat-header { flex-wrap: nowrap; gap: 0.5rem; padding: 0.65rem 0.75rem; }
+  .chat-shell > .chat-header { flex-wrap: nowrap; gap: 0.5rem; padding: 0.55rem 0.75rem; }
   .chat-shell > .chat-header > div:first-child { min-width: 0; }
   .chat-shell > .chat-header .font-semibold { font-size: 0.9rem; }
   .chat-shell > .chat-header .text-xs { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-shell > .chat-header > .chat-header-actions { width: auto; flex: 0 0 auto; }
   .chat-shell > .chat-header button { min-height: 42px; padding-inline: 0.8rem; }
-  .chat-shell > .chat-messages { min-width: 0; padding: 0.65rem; }
+  .chat-shell > .chat-messages { min-width: 0; padding: 0.5rem 0.65rem; }
   .chat-shell .chat-messages > div { width: 100%; max-width: none; min-width: 0; }
   .chat-shell .chat-row { width: 100%; min-width: 0; }
   .chat-shell .chat-bubble { max-width: min(88%, 22rem); min-width: 0; overflow-wrap: anywhere; }
@@ -162,7 +172,7 @@ main.flex > form textarea {
   .chat-shell .chat-bubble video { display: block; width: min(100%, 15rem); max-width: 100%; height: auto; }
   .chat-shell > div.border-t { min-width: 0; padding: 0.65rem 0.75rem; }
   .chat-shell > div.border-t > div { min-width: 0; }
-  .chat-shell > .chat-composer { padding: 0.6rem 0.65rem max(0.6rem, env(safe-area-inset-bottom)); }
+  .chat-shell > .chat-composer { position: relative; padding: 0.5rem 0.65rem max(0.5rem, env(safe-area-inset-bottom)); }
   .chat-shell .composer-layout {
     display: grid;
     width: 100%;

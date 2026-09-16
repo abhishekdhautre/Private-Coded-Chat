@@ -46,12 +46,14 @@ function useScreenshotPrevention(active: boolean) {
     const onBeforePrint = () => {
       document.body.style.visibility = "hidden";
     };
+    const blockContextMenu = (event: MouseEvent) => event.preventDefault();
 
     window.addEventListener("keydown", blockKey, true);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("beforeprint", onBeforePrint);
+    document.addEventListener("contextmenu", blockContextMenu);
 
     return () => {
       window.removeEventListener("keydown", blockKey, true);
@@ -59,6 +61,7 @@ function useScreenshotPrevention(active: boolean) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("beforeprint", onBeforePrint);
+      document.removeEventListener("contextmenu", blockContextMenu);
       document.body.style.visibility = "";
     };
   }, [active]);
@@ -379,7 +382,7 @@ function ChatInner() {
 
   return (
     <main
-      className="chat-shell flex min-h-screen flex-col bg-[#05070b]"
+      className="chat-shell flex min-h-[100dvh] flex-col bg-[#05070b]"
       // CSS-level screenshot deterrence: disable selection and drag
       style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}
     >
