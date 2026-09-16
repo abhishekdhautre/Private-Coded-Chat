@@ -40,15 +40,25 @@ function useScreenshotPrevention(active: boolean) {
     const onFocus = () => {
       document.body.style.visibility = "";
     };
+    const onVisibilityChange = () => {
+      document.body.style.visibility = document.visibilityState === "hidden" ? "hidden" : "";
+    };
+    const onBeforePrint = () => {
+      document.body.style.visibility = "hidden";
+    };
 
     window.addEventListener("keydown", blockKey, true);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeprint", onBeforePrint);
 
     return () => {
       window.removeEventListener("keydown", blockKey, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeprint", onBeforePrint);
       document.body.style.visibility = "";
     };
   }, [active]);
