@@ -242,8 +242,19 @@ function ChatInner() {
   // Blur on window focus loss (message list only)
   useEffect(() => {
     const onBlur = () => { setBlurred(true); setPrivacyProtected(true); };
-    const onFocus = () => { setBlurred(false); setPrivacyProtected(false); };
-    const onVis = () => { if (document.visibilityState === "hidden") lock(); };
+    const onFocus = () => {
+      if (document.visibilityState === "visible") {
+        setBlurred(false);
+        setPrivacyProtected(false);
+      }
+    };
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        setBlurred(true);
+        setPrivacyProtected(true);
+        lock();
+      }
+    };
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);

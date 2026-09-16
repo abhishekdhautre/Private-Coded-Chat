@@ -2,9 +2,10 @@
 
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body { min-height: 100%; }
+html, body { width: 100%; min-height: 100%; max-width: 100%; }
 body {
   margin: 0;
+  overflow-x: hidden;
   background: #070a0f;
   color: #eef2f7;
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
@@ -20,6 +21,8 @@ button, input, textarea { font: inherit; }
   height: 100dvh;
   overflow: hidden;
   isolation: isolate;
+  width: 100%;
+  max-width: 100%;
 }
 
 .chat-header {
@@ -57,6 +60,9 @@ button, input, textarea { font: inherit; }
 .chat-composer { background: var(--chat-panel); border-color: rgba(233, 237, 239, 0.08) !important; }
 .chat-composer > div { width: min(100%, 62rem); }
 .chat-composer { position: relative; z-index: 5; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+.chat-composer form,
+.chat-composer button,
+.chat-composer textarea { min-width: 0; }
 .chat-composer textarea { border-color: transparent !important; background: #2a3942 !important; }
 .chat-composer textarea:focus { box-shadow: none; }
 .chat-composer .mode-switch { box-shadow: 0 0 0 1px rgba(33, 196, 214, 0.12); }
@@ -218,4 +224,6 @@ main.flex > form textarea {
     width: 100%;
   }
   .chat-shell .composer-layout > .mode-switch button { flex: 1; min-width: 0; }
+  .chat-shell .chat-composer .mode-switch { overflow: hidden; }
+  .chat-shell .chat-composer .mode-switch button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
