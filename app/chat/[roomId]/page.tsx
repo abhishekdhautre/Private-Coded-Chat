@@ -125,9 +125,9 @@ function MessageBubble({
   };
 
   return (
-    <div className={`chat-row relative flex w-full flex-col ${isMine ? "items-end" : "items-start"}`}>
+    <div className={`chat-row relative flex w-full flex-col min-w-0 ${isMine ? "items-end" : "items-start"}`}>
       <div
-        className={`chat-bubble max-w-[85%] select-none ${
+        className={`chat-bubble select-none ${
           isMine ? "chat-bubble-outgoing" : "chat-bubble-incoming"
         }`}
         onMouseDown={startLongPress}
@@ -402,23 +402,28 @@ function ChatInner() {
 
   return (
     <main
-      className="chat-page chat-shell flex min-h-[100dvh] flex-col bg-[#05070b]"
-      // CSS-level screenshot deterrence: disable selection and drag
+      className="chat-page chat-shell"
       style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}
     >
       {/* Header */}
-      <header className="chat-header flex items-center justify-between border-b border-white/10 px-4 py-4 md:px-8">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="chat-avatar">🔐</span>
-            <span className="font-semibold">Private room</span>
+      <header className="chat-header">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="chat-avatar">🔐</span>
+          <div className="min-w-0 flex-1">
+            <h1 className="font-semibold text-sm sm:text-base text-slate-100 truncate leading-tight">
+              Private room
+            </h1>
+            <p className="text-xs text-slate-500 truncate leading-tight">
+              <span className="hidden sm:inline">End-to-end encrypted · </span>
+              <span className="sm:hidden">Encrypted · </span>
+              <span className="font-mono">{roomId}</span>
+            </p>
           </div>
-          <p className="text-xs text-slate-500">End-to-end encrypted · {roomId}</p>
         </div>
-        <div className="chat-header-actions flex items-center gap-2">
+        <div className="chat-header-actions flex items-center gap-2 flex-shrink-0">
           <button
             onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}
-            className="rounded-lg border border-white/10 px-3 py-2 text-sm"
+            className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5 transition"
           >
             Lock
           </button>
@@ -427,10 +432,10 @@ function ChatInner() {
 
       {/* Message list */}
       <section
-        className={`sensitive-chat-content messages-container chat-messages flex-1 overflow-y-auto p-4 transition duration-100 md:p-8 ${blurred ? "blur-xl pointer-events-none" : ""}`}
+        className={`sensitive-chat-content messages-container chat-messages ${blurred ? "blur-xl pointer-events-none" : ""}`}
         aria-label="Message list"
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-3">
+        <div className="mx-auto flex max-w-3xl flex-col gap-3 min-w-0">
           {messages.map(m => (
             <MessageBubble
               key={m.id}
@@ -454,7 +459,7 @@ function ChatInner() {
             ) : (
               <video src={mediaPreview} className="h-16 w-16 rounded-lg object-cover" muted />
             )}
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <p className="text-xs text-slate-300 truncate">{mediaFile.name}</p>
               <p className="text-[10px] text-amber-400">⏱ Expires 30s after sending</p>
             </div>
@@ -464,28 +469,63 @@ function ChatInner() {
       )}
 
       {/* Input bar */}
-      <form onSubmit={send} className="message-composer chat-composer border-t border-white/10 p-4 md:px-8">
-        <div className="composer-layout mx-auto flex max-w-3xl flex-wrap gap-2 items-end">
-          {/* Hidden file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*,video/*"
-            className="hidden"
-            onChange={handleFileSelect}
-          />
-          {/* Attachment button */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="order-1 rounded-xl border border-white/10 px-3 py-3 text-slate-400 hover:text-cyan-400 hover:border-cyan-400/40 transition-colors"
-            title="Attach photo or video (expires in 30s)"
-            aria-label="Attach media"
-          >
-            📎
-          </button>
+      <form onSubmit={send} className="message-composer chat-composer">
+        <div className="mx-auto flex max-w-3xl flex-col gap-2 min-w-0">
+          {/* Row 1: Attachment, Input, Desktop Mode Switch, Send */}
+          <div className="flex items-end gap-2 w-full min-w-0">
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,video/*"
+              className="hidden"
+              onChange={handleFileSelect}
+            />
+            {/* Attachment button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-white/10 text-slate-400 hover:text-cyan-400 hover:border-cyan-400/40 transition-colors"
+              title="Attach photo or video (expires in 30s)"
+              aria-label="Attach media"
+            >
+              📎
+            </button>
 
-          <div className="mode-switch order-3 flex rounded-xl border border-white/10 bg-white/[.04] p-1" role="group" aria-label="Message display mode">
+            {/* Message input */}
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(e as unknown as FormEvent); }
+              }}
+              rows={1}
+              placeholder={mediaFile ? "Add a caption… (optional)" : "Write a message…"}
+              className="min-h-11 flex-1 resize-none rounded-xl border border-transparent bg-[#2a3942] px-4 py-2.5 text-sm text-slate-100 placeholder-slate-400 outline-none focus:border-cyan-400/50"
+              style={{ userSelect: "text" } as React.CSSProperties}
+            />
+
+            {/* Coded/Revealed Toggle - Desktop */}
+            <div className="hidden sm:inline-flex mode-switch flex-shrink-0" role="group" aria-label="Message display mode">
+              <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>
+                Coded
+              </button>
+              <button type="button" onClick={() => setRevealed(true)} className={revealed ? "mode-active" : "mode-option"}>
+                Revealed
+              </button>
+            </div>
+
+            {/* Send button */}
+            <button
+              disabled={sending || (!input.trim() && !mediaFile)}
+              className="flex h-11 flex-shrink-0 items-center justify-center rounded-xl bg-cyan-400 px-5 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed text-sm"
+            >
+              {sending ? "…" : "Send"}
+            </button>
+          </div>
+
+          {/* Row 2: Coded/Revealed Toggle - Mobile */}
+          <div className="sm:hidden mode-switch w-full" role="group" aria-label="Message display mode mobile">
             <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>
               Coded
             </button>
@@ -493,28 +533,11 @@ function ChatInner() {
               Revealed
             </button>
           </div>
-
-          <textarea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(e as unknown as FormEvent); }
-            }}
-            rows={1}
-            placeholder={mediaFile ? "Add a caption… (optional)" : "Write a message…"}
-            className="order-2 min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/[.04] px-4 py-3 outline-none focus:border-cyan-400"
-            style={{ userSelect: "text" } as React.CSSProperties}
-          />
-
-          <button
-            disabled={sending || (!input.trim() && !mediaFile)}
-            className="composer-send order-4 rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {sending ? "…" : "Send"}
-          </button>
         </div>
+
         {error && <p className="mx-auto mt-2 max-w-3xl text-xs text-red-300">{error}</p>}
       </form>
+
       {privacyProtected && (
         <div className="privacy-overlay" role="status" aria-live="polite">
           <div className="privacy-overlay-card">
