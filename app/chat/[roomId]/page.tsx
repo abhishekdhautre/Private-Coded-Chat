@@ -15,7 +15,7 @@ const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024; // 5 MB hard cap
 
 // ── Screenshot prevention ────────────────────────────────────────────────────
-function useScreenshotPrevention(active: boolean) {
+function useScreenshotPrevention(active: boolean, onProtectedChange: (protectedState: boolean) => void) {
   useEffect(() => {
     if (!active) return;
 
@@ -28,23 +28,26 @@ function useScreenshotPrevention(active: boolean) {
       ) {
         e.preventDefault();
         // Briefly blank the page so any OS-level capture gets nothing
-        document.body.style.visibility = "hidden";
-        setTimeout(() => { document.body.style.visibility = ""; }, 300);
+        onProtectedChange(true);
+        window.setTimeout(() => onProtectedChange(false), 700);
       }
     };
 
     // 2. Detect when the window loses focus (screenshot tool, screen recorder)
     const onBlur = () => {
-      document.body.style.visibility = "hidden";
+      onProtectedChange(true);
     };
     const onFocus = () => {
-      document.body.style.visibility = "";
+      if (document.visibilityState === "visible") onProtectedChange(false);
     };
     const onVisibilityChange = () => {
-      document.body.style.visibility = document.visibilityState === "hidden" ? "hidden" : "";
+      onProtectedChange(document.visibilityState === "hidden");
     };
     const onBeforePrint = () => {
-      document.body.style.visibility = "hidden";
+      onProtectedChange(true);
+    };
+    const onAfterPrint = () => {
+      if (document.visibilityState === "visible") onProtectedChange(false);
     };
     const blockContextMenu = (event: MouseEvent) => event.preventDefault();
 
@@ -53,6 +56,7 @@ function useScreenshotPrevention(active: boolean) {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("beforeprint", onBeforePrint);
+    window.addEventListener("afterprint", onAfterPrint);
     document.addEventListener("contextmenu", blockContextMenu);
 
     return () => {
@@ -61,10 +65,10 @@ function useScreenshotPrevention(active: boolean) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("beforeprint", onBeforePrint);
+      window.removeEventListener("afterprint", onAfterPrint);
       document.removeEventListener("contextmenu", blockContextMenu);
-      document.body.style.visibility = "";
     };
-  }, [active]);
+  }, [active, onProtectedChange]);
 }
 
 // ── Media expiry countdown ───────────────────────────────────────────────────
@@ -218,12 +222,17 @@ function ChatInner() {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [privacyProtected, setPrivacyProtected] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Track blob URLs to revoke on unmount
   const blobUrls = useRef<string[]>([]);
 
-  useScreenshotPrevention(true);
+  const handlePrivacyProtection = useCallback((protectedState: boolean) => {
+    setPrivacyProtected(protectedState);
+  }, []);
+
+  useScreenshotPrevention(true, handlePrivacyProtection);
 
   // Redirect if locked
   useEffect(() => {
@@ -232,8 +241,8 @@ function ChatInner() {
 
   // Blur on window focus loss (message list only)
   useEffect(() => {
-    const onBlur = () => setBlurred(true);
-    const onFocus = () => setBlurred(false);
+    const onBlur = () => { setBlurred(true); setPrivacyProtected(true); };
+    const onFocus = () => { setBlurred(false); setPrivacyProtected(false); };
     const onVis = () => { if (document.visibilityState === "hidden") lock(); };
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
@@ -495,6 +504,15 @@ function ChatInner() {
         </div>
         {error && <p className="mx-auto mt-2 max-w-3xl text-xs text-red-300">{error}</p>}
       </form>
+      {privacyProtected && (
+        <div className="privacy-overlay" role="status" aria-live="polite">
+          <div className="privacy-overlay-card">
+            <span className="privacy-overlay-icon" aria-hidden="true">🔒</span>
+            <strong>Chat Protected</strong>
+            <span>Return to continue</span>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

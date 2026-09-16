@@ -19,6 +19,7 @@ button, input, textarea { font: inherit; }
   --chat-cyan: #21c4d6;
   height: 100dvh;
   overflow: hidden;
+  isolation: isolate;
 }
 
 .chat-header {
@@ -74,6 +75,32 @@ button, input, textarea { font: inherit; }
 .chat-bubble-incoming { background: var(--chat-incoming); border-top-left-radius: 0.15rem; }
 .chat-bubble-outgoing { background: var(--chat-green); border-top-right-radius: 0.15rem; }
 .chat-meta { color: rgba(174, 197, 204, 0.8); }
+
+.privacy-overlay {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgba(4, 9, 12, 0.98);
+  color: #e9edef;
+  text-align: center;
+}
+
+.privacy-overlay-card {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: center;
+  color: #9fb1b8;
+}
+
+.privacy-overlay-card strong {
+  color: #e9edef;
+  font-size: clamp(1.15rem, 4vw, 1.5rem);
+}
+
+.privacy-overlay-icon { font-size: 2rem; }
 
 @media print {
   body { display: none !important; }
