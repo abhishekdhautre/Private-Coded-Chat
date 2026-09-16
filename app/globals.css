@@ -44,6 +44,35 @@ main.flex > form textarea {
   background: rgba(255, 255, 255, 0.045);
 }
 
+.mode-switch {
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.08), 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.mode-option,
+.mode-active {
+  min-height: 2.75rem;
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.mode-option {
+  color: #94a3b8;
+}
+
+.mode-option:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mode-active {
+  color: #04141a;
+  background: #22d3ee;
+  box-shadow: 0 4px 14px rgba(34, 211, 238, 0.25);
+}
+
 @media (max-width: 640px) {
   body { overflow-x: hidden; }
   input, textarea, button { min-height: 48px; }
@@ -64,4 +93,6 @@ main.flex > form textarea {
   main.flex > form > div { align-items: stretch; }
   main.flex > form textarea { min-width: 0; }
   main.flex > form button { flex-shrink: 0; padding-inline: 1rem; }
+  main.flex > form .mode-switch { width: 100%; }
+  main.flex > form .mode-switch button { flex: 1; }
 }
