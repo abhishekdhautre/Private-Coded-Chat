@@ -336,14 +336,17 @@ function ChatInner() {
 
   useEffect(() => {
     if (!showOverflowMenu) return;
-    const handler = (event: MouseEvent | TouchEvent) => {
+    const handler = (event: PointerEvent) => {
       if (overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) setShowOverflowMenu(false);
     };
-    document.addEventListener("mousedown", handler);
-    document.addEventListener("touchstart", handler);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowOverflowMenu(false);
+    };
+    document.addEventListener("pointerdown", handler);
+    document.addEventListener("keydown", closeOnEscape);
     return () => {
-      document.removeEventListener("mousedown", handler);
-      document.removeEventListener("touchstart", handler);
+      document.removeEventListener("pointerdown", handler);
+      document.removeEventListener("keydown", closeOnEscape);
     };
   }, [showOverflowMenu]);
 
@@ -775,7 +778,7 @@ function ChatInner() {
               ⋮
             </button>
             {showOverflowMenu && (
-              <div className="chat-overflow-menu">
+              <div className="chat-overflow-menu" onPointerDown={(event) => event.stopPropagation()}>
                 <button type="button" onClick={() => setShowPrivacySettings((open) => !open)} className="chat-menu-item">Privacy & disappearing</button>
                 <button type="button" onClick={() => { setShowSearch(true); setShowOverflowMenu(false); }} className="chat-menu-item">Search messages</button>
                 <button type="button" onClick={() => setShowOverflowMenu(false)} className="chat-menu-item">Pinned messages</button>
