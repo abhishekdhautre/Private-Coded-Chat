@@ -13,45 +13,11 @@ import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
 import { GifPicker } from "@/components/GifPicker";
 import { CameraCapture } from "@/components/CameraCapture";
-import type { DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
+import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
 
 const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 const DISAPPEARING_MS = 24 * 60 * 60 * 1000;
-
-// ── Screenshot prevention ────────────────────────────────────────────────────
-function useScreenshotPrevention(active: boolean, onProtectedChange: (v: boolean) => void) {
-  useEffect(() => {
-    if (!active) return;
-    const blockKey = (e: KeyboardEvent) => {
-      if (
-        e.key === "PrintScreen" ||
-        e.code === "PrintScreen" ||
-        (e.metaKey && e.shiftKey && (e.key === "3" || e.key === "4" || e.key === "5"))
-      ) {
-        e.preventDefault();
-        onProtectedChange(true);
-        window.setTimeout(() => onProtectedChange(false), 700);
-      }
-    };
-    const onVis = () => onProtectedChange(document.visibilityState === "hidden");
-    const onBP = () => onProtectedChange(true);
-    const onAP = () => { if (document.visibilityState === "visible") onProtectedChange(false); };
-    const blockCtx = (e: MouseEvent) => e.preventDefault();
-    window.addEventListener("keydown", blockKey, true);
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("beforeprint", onBP);
-    window.addEventListener("afterprint", onAP);
-    document.addEventListener("contextmenu", blockCtx);
-    return () => {
-      window.removeEventListener("keydown", blockKey, true);
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("beforeprint", onBP);
-      window.removeEventListener("afterprint", onAP);
-      document.removeEventListener("contextmenu", blockCtx);
-    };
-  }, [active, onProtectedChange]);
-}
 
 // ── Media expiry countdown ───────────────────────────────────────────────────
 function MediaTimer({ expiresAt }: { expiresAt: number }) {
@@ -69,14 +35,21 @@ function MediaTimer({ expiresAt }: { expiresAt: number }) {
 
 // ── Message Bubble ───────────────────────────────────────────────────────────
 function MessageBubble({
-  m, isMine, revealed, keyword, onDelete, onReact, myUid,
+  m, isMine, revealed, keyword, onDelete, onDeleteForMe, onConsume, onReact, onReply, onEdit, onPin, onSelect, selected, myUid,
 }: {
   m: DecryptedMessage;
   isMine: boolean;
   revealed: boolean;
   keyword: string;
   onDelete: (id: string) => void;
+  onDeleteForMe: (id: string) => void;
+  onConsume: (id: string) => void;
   onReact: (id: string, emoji: string) => void;
+  onReply: (message: DecryptedMessage) => void;
+  onEdit: (message: DecryptedMessage) => void;
+  onPin: (id: string, pinned: boolean) => void;
+  onSelect: (id: string) => void;
+  selected: boolean;
   myUid: string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -143,7 +116,8 @@ function MessageBubble({
         )}
 
         <div
-          className={`chat-bubble select-none ${isMine ? "chat-bubble-outgoing" : "chat-bubble-incoming"} ${isSticker ? "chat-bubble-sticker" : ""}`}
+          className={`chat-bubble ${selected ? "chat-bubble-selected" : ""} ${isMine ? "chat-bubble-outgoing" : "chat-bubble-incoming"} ${isSticker ? "chat-bubble-sticker" : ""}`}
+          onDoubleClick={() => onReact(m.id, myEmoji === "❤️" ? "" : "❤️")}
           onMouseDown={startLongPress}
           onMouseUp={cancelLongPress}
           onMouseLeave={cancelLongPress}
@@ -179,6 +153,7 @@ function MessageBubble({
                   className="max-w-[260px] rounded-xl object-cover"
                   draggable={false}
                   onContextMenu={(e) => e.preventDefault()}
+                  onClick={() => { if (m.viewOnce && !m.consumedBy?.[myUid]) onConsume(m.id); }}
                 />
               ) : (
                 <video
@@ -196,6 +171,7 @@ function MessageBubble({
           )}
 
           {/* Text */}
+          {m.replyTo && <p className="mb-1 border-l-2 border-cyan-300/60 pl-2 text-[11px] text-slate-300">Replying to a message</p>}
           {!isSticker && m.plaintext && m.plaintext.trim() !== "" && (
             <p className="whitespace-pre-wrap break-words text-sm leading-6">{display}</p>
           )}
@@ -208,6 +184,9 @@ function MessageBubble({
               </span>
               {isMedia && m.expiresAt && m.expiresAt > Date.now() && <MediaTimer expiresAt={m.expiresAt} />}
               {isMedia && m.expiresAt && <span className="text-[10px] text-slate-600">· disappears</span>}
+              {m.editedAt && <span className="text-[10px] text-slate-500">edited</span>}
+              {m.pinned && <span className="text-[10px] text-amber-300">pinned</span>}
+              {m.readBy && Object.keys(m.readBy).length > 1 && <span className="text-[10px] text-cyan-300">read</span>}
             </div>
           )}
         </div>
@@ -241,6 +220,36 @@ function MessageBubble({
         {menuOpen && (
           <div className={`msg-menu ${isMine ? "right-0" : "left-0"}`}>
             <button
+              onClick={() => { onReply(m); setMenuOpen(false); }}
+              className="msg-menu-item"
+            >
+              ↩ Reply
+            </button>
+            <button
+              onClick={() => { void navigator.clipboard?.writeText(m.plaintext); setMenuOpen(false); }}
+              className="msg-menu-item"
+            >
+              Copy message
+            </button>
+            <button
+              onClick={() => { onSelect(m.id); setMenuOpen(false); }}
+              className="msg-menu-item"
+            >
+              Select
+            </button>
+            <button
+              onClick={() => { onPin(m.id, !m.pinned); setMenuOpen(false); }}
+              className="msg-menu-item"
+            >
+              {m.pinned ? "Unpin" : "Pin message"}
+            </button>
+            {isMine && <button
+              onClick={() => { onEdit(m); setMenuOpen(false); }}
+              className="msg-menu-item"
+            >
+              Edit message
+            </button>}
+            <button
               onClick={() => { setReactionOpen(true); setMenuOpen(false); }}
               className="msg-menu-item"
             >
@@ -251,6 +260,12 @@ function MessageBubble({
               className="msg-menu-item text-red-400"
             >
               🗑 Delete for everyone
+            </button>
+            <button
+              onClick={() => { setMenuOpen(false); onDeleteForMe(m.id); }}
+              className="msg-menu-item text-red-300"
+            >
+              Hide for me
             </button>
           </div>
         )}
@@ -277,6 +292,19 @@ function ChatInner() {
   const [sending, setSending] = useState(false);
   const [privacyProtected, setPrivacyProtected] = useState(false);
   const [disappearing, setDisappearing] = useState(false);
+  const [ghostLifetime, setGhostLifetime] = useState<number | null>(null);
+  const [conversationMode, setConversationMode] = useState<ConversationMode>("NORMAL");
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<number | null>(null);
+  const [viewOnce, setViewOnce] = useState(false);
+  const [momentInput, setMomentInput] = useState("");
+  const [moments, setMoments] = useState<Array<{ id: string; text: string; senderId: string; expiresAt: number }>>([]);
+  const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [replyingTo, setReplyingTo] = useState<DecryptedMessage | null>(null);
+  const [editing, setEditing] = useState<DecryptedMessage | null>(null);
+  const [typing, setTyping] = useState(false);
+  const [otherTyping, setOtherTyping] = useState(false);
+  const [unread, setUnread] = useState(0);
   const [disappearingLoading, setDisappearingLoading] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
   const [showGifs, setShowGifs] = useState(false);
@@ -286,9 +314,6 @@ function ChatInner() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const blobUrls = useRef<string[]>([]);
   const attachMenuRef = useRef<HTMLDivElement>(null);
-
-  const handlePrivacyProtection = useCallback((v: boolean) => setPrivacyProtected(v), []);
-  useScreenshotPrevention(true, handlePrivacyProtection);
 
   // Close attach menu on outside click
   useEffect(() => {
@@ -319,7 +344,7 @@ function ChatInner() {
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "hidden") { setBlurred(true); setPrivacyProtected(true); lock(); }
-      else { setBlurred(false); setPrivacyProtected(false); }
+      else { setBlurred(false); setPrivacyProtected(true); }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -339,7 +364,12 @@ function ChatInner() {
     const metaRef = ref(db, `rooms/${roomId}/meta`);
     return onValue(metaRef, (snap) => {
       const meta = snap.val() as RoomMeta | null;
-      if (meta) setDisappearing(!!meta.disappearing);
+      if (meta) {
+        setDisappearing(!!meta.disappearing);
+        setGhostLifetime(meta.ghostLifetimeMs ?? null);
+        setConversationMode(meta.mode ?? "NORMAL");
+        setSessionExpiresAt(meta.sessionExpiresAt ?? null);
+      }
     });
   }, [key, user, roomId]);
 
@@ -358,6 +388,7 @@ function ChatInner() {
           remove(ref(db, `rooms/${roomId}/messages/${id}`)).catch(() => {});
           continue;
         }
+        if (row.deletedFor?.[user.uid]) continue;
         try {
           const plaintext = await decrypt(row.ciphertext, row.iv, key);
           let mediaBlobUrl: string | null = null;
@@ -378,7 +409,18 @@ function ChatInner() {
       }
 
       next.sort((a, b) => a.timestamp - b.timestamp);
-      setMessages(next);
+      setMessages((previous) => {
+        if (document.visibilityState !== "visible") setUnread((count) => count + Math.max(0, next.length - previous.length));
+        return next;
+      });
+
+      if (user) {
+        const readUpdates: Record<string, unknown> = {};
+        next.filter((message) => message.senderId !== user.uid).forEach((message) => {
+          readUpdates[`rooms/${roomId}/messages/${message.id}/readBy/${user.uid}`] = Date.now();
+        });
+        if (Object.keys(readUpdates).length) update(ref(db), readUpdates).catch(() => {});
+      }
 
       // Mark viewed for disappearing mode
       if (disappearing && user && next.length > 0) {
@@ -388,6 +430,49 @@ function ChatInner() {
       }
     });
   }, [key, user, roomId, disappearing]);
+
+  // Presence is metadata only; message plaintext never enters Firebase.
+  useEffect(() => {
+    if (!key || !user) return;
+    const typingRef = ref(db, `rooms/${roomId}/presence/${user.uid}`);
+    if (!typing) {
+      remove(typingRef).catch(() => {});
+      return;
+    }
+    update(ref(db), { [`rooms/${roomId}/presence/${user.uid}`]: { typing: true, at: Date.now() } }).catch(() => {});
+    const timeout = window.setTimeout(() => setTyping(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [key, roomId, typing, user]);
+
+  useEffect(() => {
+    if (!key || !user) return;
+    return onValue(ref(db, `rooms/${roomId}/presence`), (snapshot) => {
+      const presence = snapshot.val() as Record<string, { typing?: boolean; at?: number }> | null;
+      const other = Object.entries(presence ?? {}).some(([uid, value]) => uid !== user.uid && value.typing && Date.now() - (value.at ?? 0) < 4000);
+      setOtherTyping(other);
+    });
+  }, [key, roomId, user]);
+
+  useEffect(() => {
+    if (!key || !user) return;
+    return onValue(ref(db, `rooms/${roomId}/moments`), async (snapshot) => {
+      const rows = snapshot.val() as Record<string, { ciphertext: string; iv: string; senderId: string; expiresAt: number }> | null;
+      const next = await Promise.all(Object.entries(rows ?? {}).map(async ([id, row]) => {
+        if (row.expiresAt <= Date.now()) { remove(ref(db, `rooms/${roomId}/moments/${id}`)).catch(() => {}); return null; }
+        try { return { id, senderId: row.senderId, expiresAt: row.expiresAt, text: await decrypt(row.ciphertext, row.iv, key) }; }
+        catch { return null; }
+      }));
+      setMoments(next.filter((moment): moment is { id: string; text: string; senderId: string; expiresAt: number } => moment !== null));
+    });
+  }, [key, roomId, user]);
+
+  useEffect(() => {
+    if (!sessionExpiresAt) return;
+    const remaining = sessionExpiresAt - Date.now();
+    if (remaining <= 0) { lock(); return; }
+    const timeout = window.setTimeout(lock, remaining);
+    return () => window.clearTimeout(timeout);
+  }, [lock, sessionExpiresAt]);
 
   // Auto-scroll
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
@@ -449,6 +534,36 @@ function ChatInner() {
     }
   };
 
+  const updateGhostLifetime = async (value: string) => {
+    const lifetime = value === "keep" ? null : Number(value);
+    setGhostLifetime(lifetime);
+    try {
+      await update(ref(db, `rooms/${roomId}/meta`), { ghostLifetimeMs: lifetime, mode: lifetime ? "GHOST" : conversationMode });
+    } catch { setError("Could not update ghost mode."); }
+  };
+
+  const updateConversationMode = async (mode: ConversationMode) => {
+    setConversationMode(mode);
+    try { await update(ref(db, `rooms/${roomId}/meta`), { mode }); }
+    catch { setError("Could not update conversation mode."); }
+  };
+
+  const startGhostSession = async (duration: number) => {
+    const expiresAt = Date.now() + duration;
+    setSessionExpiresAt(expiresAt);
+    try { await update(ref(db, `rooms/${roomId}/meta`), { mode: "LIVE", sessionExpiresAt: expiresAt }); }
+    catch { setError("Could not start ghost session."); }
+  };
+
+  const sendMoment = async () => {
+    if (!key || !user || !momentInput.trim()) return;
+    try {
+      const payload = await encrypt(momentInput.trim(), key);
+      await push(ref(db, `rooms/${roomId}/moments`), { ...payload, senderId: user.uid, expiresAt: Date.now() + 86_400_000 });
+      setMomentInput("");
+    } catch { setError("Could not publish moment."); }
+  };
+
   // Delete message
   const deleteMessage = useCallback(async (id: string) => {
     try {
@@ -457,6 +572,41 @@ function ChatInner() {
       setError("Could not delete message.");
     }
   }, [roomId]);
+
+  const deleteForMe = useCallback(async (id: string) => {
+    if (!user) return;
+    try {
+      await update(ref(db, `rooms/${roomId}/messages/${id}/deletedFor`), { [user.uid]: true });
+      setMessages((current) => current.filter((message) => message.id !== id));
+    } catch { setError("Could not hide message."); }
+  }, [roomId, user]);
+
+  const consumeMedia = useCallback(async (id: string) => {
+    if (!user) return;
+    try {
+      await update(ref(db, `rooms/${roomId}/messages/${id}/consumedBy`), { [user.uid]: Date.now() });
+      setMessages((current) => current.map((message) => message.id === id ? { ...message, mediaBlobUrl: null, consumedBy: { ...(message.consumedBy ?? {}), [user.uid]: Date.now() } } : message));
+    } catch { setError("Could not consume media."); }
+  }, [roomId, user]);
+
+  const editMessage = useCallback(async (message: DecryptedMessage) => {
+    if (!key) return;
+    const nextText = window.prompt("Edit message", message.plaintext);
+    if (nextText === null || !nextText.trim()) return;
+    try {
+      const payload = await encrypt(nextText.trim(), key);
+      await update(ref(db, `rooms/${roomId}/messages/${message.id}`), { ...payload, editedAt: Date.now() });
+    } catch { setError("Could not edit message."); }
+  }, [key, roomId]);
+
+  const pinMessage = useCallback(async (id: string, pinned: boolean) => {
+    try { await update(ref(db, `rooms/${roomId}/messages/${id}`), { pinned }); }
+    catch { setError("Could not update pinned message."); }
+  }, [roomId]);
+
+  const selectMessage = useCallback((id: string) => {
+    setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }, []);
 
   // React to message
   const reactToMessage = useCallback(async (msgId: string, emoji: string) => {
@@ -541,6 +691,9 @@ function ChatInner() {
         timestamp: Date.now(),
         msgType: "text",
       };
+      if (replyingTo) record.replyTo = replyingTo.id;
+      if (ghostLifetime) record.expiresAt = Date.now() + ghostLifetime;
+      if (conversationMode === "BURST") record.expiresAt = Date.now() + 60_000;
       if (mediaFile) {
         const bytes = new Uint8Array(await mediaFile.arrayBuffer());
         const { data, iv } = await encryptBytes(bytes, key);
@@ -549,9 +702,11 @@ function ChatInner() {
         record.mediaType = mediaFile.type.startsWith("image/") ? "image" : "video";
         record.msgType = record.mediaType;
         record.expiresAt = Date.now() + MEDIA_EXPIRY_MS;
+        record.viewOnce = viewOnce;
       }
       await push(ref(db, `rooms/${roomId}/messages`), record);
       setInput("");
+      setReplyingTo(null);
       clearMedia();
     } catch {
       setError("Message could not be encrypted/sent.");
@@ -559,6 +714,8 @@ function ChatInner() {
       setSending(false);
     }
   }
+
+  const visibleMessages = messages.filter((message) => !search.trim() || message.plaintext.toLowerCase().includes(search.trim().toLowerCase()));
 
   if (!key) return null;
 
@@ -589,11 +746,20 @@ function ChatInner() {
           >
             ⏳
           </button>
+          <select
+            value={conversationMode}
+            onChange={(event) => void updateConversationMode(event.target.value as ConversationMode)}
+            className="header-mode-select"
+            aria-label="Conversation mode"
+          >
+            {(["NORMAL", "GHOST", "BURST", "VAULT", "STEALTH", "LIVE"] as ConversationMode[]).map((mode) => <option key={mode}>{mode}</option>)}
+          </select>
+          <button type="button" onClick={() => void startGhostSession(60 * 60 * 1000)} className="header-icon-btn" title="Start one-hour live session" aria-label="Start ghost session">LIVE</button>
           <button
             onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}
             className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5 transition flex-shrink-0"
           >
-            Lock
+            Lock now
           </button>
         </div>
       </header>
@@ -604,6 +770,28 @@ function ChatInner() {
           ⏳ Disappearing messages on · Messages delete 24h after both participants view them
         </div>
       )}
+
+      <div className="chat-tools">
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search this room" aria-label="Search messages" />
+        <select value={ghostLifetime === null ? "keep" : String(ghostLifetime)} onChange={(event) => void updateGhostLifetime(event.target.value)} aria-label="Message lifetime">
+          <option value="keep">Keep</option>
+          <option value="10000">10 seconds</option>
+          <option value="60000">1 minute</option>
+          <option value="600000">10 minutes</option>
+          <option value="3600000">1 hour</option>
+          <option value="86400000">24 hours</option>
+        </select>
+        {selectedIds.length > 0 && <button type="button" onClick={() => { void Promise.all(selectedIds.map(deleteForMe)); setSelectedIds([]); }}>Hide selected</button>}
+        <label className="view-once-toggle"><input type="checkbox" checked={viewOnce} onChange={(event) => setViewOnce(event.target.checked)} /> view once</label>
+        {otherTyping && <span className="typing-indicator">Someone is typing</span>}
+        {unread > 0 && <button type="button" onClick={() => setUnread(0)}>{unread} unread</button>}
+      </div>
+
+      <section className="moments-strip" aria-label="Temporary moments">
+        <div className="moments-heading"><strong>Moments</strong><span>expire after 24h</span></div>
+        <div className="moments-list">{moments.map((moment) => <article key={moment.id}><p>{moment.text}</p><small>{moment.senderId === user?.uid ? "You" : "Room member"}</small></article>)}</div>
+        <div className="moments-compose"><input value={momentInput} onChange={(event) => setMomentInput(event.target.value)} placeholder="Share a temporary text moment" /><button type="button" onClick={() => void sendMoment()} disabled={!momentInput.trim()}>Post</button></div>
+      </section>
 
       {/* Message list */}
       <section
@@ -617,7 +805,7 @@ function ChatInner() {
               <p className="text-sm text-slate-500 mt-2">No messages yet. Say hello!</p>
             </div>
           )}
-          {messages.map((m) => (
+          {visibleMessages.map((m) => (
             <MessageBubble
               key={m.id}
               m={m}
@@ -625,7 +813,14 @@ function ChatInner() {
               revealed={revealed}
               keyword={keyword}
               onDelete={deleteMessage}
+              onDeleteForMe={deleteForMe}
+              onConsume={consumeMedia}
               onReact={reactToMessage}
+              onReply={(message) => { setReplyingTo(message); setEditing(null); }}
+              onEdit={(message) => { setEditing(message); void editMessage(message); }}
+              onPin={pinMessage}
+              onSelect={selectMessage}
+              selected={selectedIds.includes(m.id)}
               myUid={user?.uid ?? ""}
             />
           ))}
@@ -660,6 +855,7 @@ function ChatInner() {
       {/* Composer */}
       <form onSubmit={send} className="message-composer chat-composer">
         <div className="composer-container">
+          {(replyingTo || editing) && <div className="composer-context">{editing ? "Editing message" : `Replying to ${replyingTo?.plaintext.slice(0, 50)}`} <button type="button" onClick={() => { setReplyingTo(null); setEditing(null); }}>Cancel</button></div>}
           <div className="composer-main">
             <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleFileSelect} />
 
@@ -696,7 +892,7 @@ function ChatInner() {
             {/* Text input */}
             <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => { setInput(e.target.value); setTyping(true); }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(e as unknown as FormEvent); }
               }}

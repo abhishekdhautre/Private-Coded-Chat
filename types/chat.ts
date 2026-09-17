@@ -25,6 +25,14 @@ export type StoredMessage = {
   reactions?: Reaction | null;
   // disappearing: viewedAt per uid
   viewedAt?: { [uid: string]: number } | null;
+  replyTo?: string | null;
+  editedAt?: number | null;
+  deletedFor?: { [uid: string]: boolean } | null;
+  readBy?: { [uid: string]: number } | null;
+  pinned?: boolean;
+  ghostLifetimeMs?: number | null;
+  viewOnce?: boolean;
+  consumedBy?: { [uid: string]: number } | null;
 };
 
 export type DecryptedMessage = StoredMessage & {
@@ -38,4 +46,22 @@ export type RoomMeta = {
   keyCheck: { ciphertext: string; iv: string };
   disappearing?: boolean;
   disappearingViewedAt?: { [uid: string]: number };
+  mode?: ConversationMode;
+  ghostLifetimeMs?: number | null;
+  sessionExpiresAt?: number | null;
+  pulseEnabled?: boolean;
+};
+
+export type ConversationMode = "NORMAL" | "GHOST" | "BURST" | "VAULT" | "STEALTH" | "LIVE";
+
+export type NotificationPreferences = {
+  messages: boolean;
+  reactions: boolean;
+  replies: boolean;
+  mentions: boolean;
+  calls: boolean;
+  ghostMessages: boolean;
+  moments: boolean;
+  activity: boolean;
+  privacy: "hide-content" | "show-content" | "hide-sender" | "disabled";
 };

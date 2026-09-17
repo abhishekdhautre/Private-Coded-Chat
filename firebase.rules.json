@@ -23,7 +23,27 @@
                 ".write": "auth != null && $uid == auth.uid && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
                 ".validate": "newData.isString() && newData.val().length <= 10"
               }
+            },
+            "readBy": {
+              "$uid": {
+                ".write": "auth != null && $uid == auth.uid && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+                ".validate": "newData.isNumber()"
+              }
             }
+          }
+        },
+        "moments": {
+          "$momentId": {
+            ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".validate": "newData.hasChildren(['ciphertext','iv','senderId','expiresAt']) && newData.child('ciphertext').isString() && newData.child('iv').isString() && newData.child('senderId').val() == auth.uid && newData.child('expiresAt').isNumber()"
+          }
+        },
+        "presence": {
+          "$uid": {
+            ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".write": "auth != null && $uid == auth.uid && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".validate": "newData.hasChildren(['typing','at']) && newData.child('typing').isBoolean() && newData.child('at').isNumber()"
           }
         },
         ".read": "false",
