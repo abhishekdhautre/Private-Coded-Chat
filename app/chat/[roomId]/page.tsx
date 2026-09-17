@@ -34,23 +34,17 @@ function useScreenshotPrevention(active: boolean, onProtectedChange: (v: boolean
         window.setTimeout(() => onProtectedChange(false), 700);
       }
     };
-    const onBlur = () => onProtectedChange(true);
-    const onFocus = () => { if (document.visibilityState === "visible") onProtectedChange(false); };
     const onVis = () => onProtectedChange(document.visibilityState === "hidden");
     const onBP = () => onProtectedChange(true);
     const onAP = () => { if (document.visibilityState === "visible") onProtectedChange(false); };
     const blockCtx = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("keydown", blockKey, true);
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("beforeprint", onBP);
     window.addEventListener("afterprint", onAP);
     document.addEventListener("contextmenu", blockCtx);
     return () => {
       window.removeEventListener("keydown", blockKey, true);
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("beforeprint", onBP);
       window.removeEventListener("afterprint", onAP);
@@ -321,21 +315,14 @@ function ChatInner() {
     }
   }, [key, router, roomId]);
 
-  // Blur / lock on visibility change
+  // Lock on tab hidden (not on blur — blur fires on tab switch which is not a security event)
   useEffect(() => {
-    const onBlur = () => { setBlurred(true); setPrivacyProtected(true); };
-    const onFocus = () => setBlurred(true);
     const onVis = () => {
       if (document.visibilityState === "hidden") { setBlurred(true); setPrivacyProtected(true); lock(); }
+      else { setBlurred(false); setPrivacyProtected(false); }
     };
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
-    return () => {
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVis);
-    };
+    return () => document.removeEventListener("visibilitychange", onVis);
   }, [lock]);
 
   // Revoke blobs on unmount

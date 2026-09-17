@@ -1,5 +1,5 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import { browserLocalPersistence, getAuth, setPersistence } from "firebase/auth";
 import { getDatabase } from "firebase/database";
 
 const firebaseConfig = {
@@ -15,5 +15,12 @@ const firebaseConfig = {
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
+// Persist the Firebase Auth session in localStorage so it survives
+// page refreshes and browser restarts. Tokens are refreshed automatically
+// by the Firebase SDK; the user is only signed out when the refresh token
+// is genuinely revoked or they explicitly call signOut().
+if (typeof window !== "undefined") {
+  setPersistence(auth, browserLocalPersistence).catch(() => {});
+}
 export const db = getDatabase(app);
 export { app };
