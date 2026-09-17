@@ -563,7 +563,10 @@ function ChatInner() {
   const updateConversationMode = async (mode: ConversationMode) => {
     setConversationMode(mode);
     try { await update(ref(db, `rooms/${roomId}/meta`), { mode }); }
-    catch { setError("Could not update conversation mode."); }
+    catch (error) {
+      const code = error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code) : "PERMISSION_DENIED";
+      setError(`Could not update conversation mode (${code}). Deploy the current Firebase rules if this persists.`);
+    }
   };
 
   const startGhostSession = async (duration: number) => {

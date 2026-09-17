@@ -10,6 +10,10 @@
             "$participantId": {
               ".validate": "$participantId == '0' || $participantId == '1'"
             }
+          },
+          "mode": {
+            ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".validate": "newData.isString() && (newData.val() == 'NORMAL' || newData.val() == 'GHOST' || newData.val() == 'BURST' || newData.val() == 'VAULT' || newData.val() == 'STEALTH' || newData.val() == 'LIVE')"
           }
         },
         "messages": {
