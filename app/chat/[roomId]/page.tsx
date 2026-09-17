@@ -336,16 +336,11 @@ function ChatInner() {
 
   useEffect(() => {
     if (!showOverflowMenu) return;
-    const handler = (event: PointerEvent) => {
-      if (overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) setShowOverflowMenu(false);
-    };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setShowOverflowMenu(false);
     };
-    document.addEventListener("pointerdown", handler);
     document.addEventListener("keydown", closeOnEscape);
     return () => {
-      document.removeEventListener("pointerdown", handler);
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [showOverflowMenu]);
@@ -744,7 +739,17 @@ function ChatInner() {
   if (!key) return null;
 
   return (
-    <main className="chat-page" style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}>
+    <main
+      className="chat-page"
+      onPointerDown={(event) => {
+        if (showOverflowMenu && overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) {
+          setShowOverflowMenu(false);
+          setShowPrivacySettings(false);
+          setShowMomentsPanel(false);
+        }
+      }}
+      style={{ WebkitUserSelect: "none", userSelect: "none" } as React.CSSProperties}
+    >
       {/* Header */}
       <header className="chat-header">
         <div className="header-info">
