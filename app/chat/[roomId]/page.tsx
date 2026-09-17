@@ -310,10 +310,15 @@ function ChatInner() {
   const [showGifs, setShowGifs] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const [showPrivacySettings, setShowPrivacySettings] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showMomentsPanel, setShowMomentsPanel] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const blobUrls = useRef<string[]>([]);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
 
   // Close attach menu on outside click
   useEffect(() => {
@@ -328,6 +333,19 @@ function ChatInner() {
       document.removeEventListener("touchstart", handler);
     };
   }, [showAttachMenu]);
+
+  useEffect(() => {
+    if (!showOverflowMenu) return;
+    const handler = (event: MouseEvent | TouchEvent) => {
+      if (overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) setShowOverflowMenu(false);
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [showOverflowMenu]);
 
   // Redirect if locked
   useEffect(() => {
@@ -728,70 +746,77 @@ function ChatInner() {
           <div className="header-text">
             <h1 className="header-title">Private room</h1>
             <p className="header-subtitle">
-              {disappearing && <span className="disappearing-badge">⏳ 24h · </span>}
-              <span className="hidden sm:inline">End-to-end encrypted · </span>
-              <span className="sm:hidden">Encrypted · </span>
-              <span className="font-mono">{roomId}</span>
+              🔐 End-to-end encrypted
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Disappearing toggle */}
           <button
-            onClick={toggleDisappearing}
-            disabled={disappearingLoading}
-            className={`header-icon-btn ${disappearing ? "header-icon-btn-active" : ""}`}
-            title={disappearing ? "Disappearing chat ON — click to disable" : "Enable 24h disappearing chat"}
-            aria-label="Toggle disappearing chat"
-          >
-            ⏳
-          </button>
-          <select
-            value={conversationMode}
-            onChange={(event) => void updateConversationMode(event.target.value as ConversationMode)}
-            className="header-mode-select"
-            aria-label="Conversation mode"
-          >
-            {(["NORMAL", "GHOST", "BURST", "VAULT", "STEALTH", "LIVE"] as ConversationMode[]).map((mode) => <option key={mode}>{mode}</option>)}
-          </select>
-          <button type="button" onClick={() => void startGhostSession(60 * 60 * 1000)} className="header-icon-btn" title="Start one-hour live session" aria-label="Start ghost session">LIVE</button>
-          <button
+            type="button"
             onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}
-            className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/5 transition flex-shrink-0"
+            className="header-icon-btn"
+            title="Lock chat"
+            aria-label="Lock chat"
           >
-            Lock now
+            🔒
           </button>
+          <div className="relative" ref={overflowMenuRef}>
+            <button
+              type="button"
+              onClick={() => setShowOverflowMenu((open) => !open)}
+              className="header-icon-btn"
+              title="Chat options"
+              aria-label="Open chat options"
+              aria-expanded={showOverflowMenu}
+            >
+              ⋮
+            </button>
+            {showOverflowMenu && (
+              <div className="chat-overflow-menu">
+                <button type="button" onClick={() => setShowPrivacySettings((open) => !open)} className="chat-menu-item">Privacy & disappearing</button>
+                <button type="button" onClick={() => { setShowSearch(true); setShowOverflowMenu(false); }} className="chat-menu-item">Search messages</button>
+                <button type="button" onClick={() => setShowOverflowMenu(false)} className="chat-menu-item">Pinned messages</button>
+                <button type="button" onClick={() => setShowOverflowMenu(false)} className="chat-menu-item">Media</button>
+                <button type="button" onClick={() => setShowMomentsPanel((open) => !open)} className="chat-menu-item">Moments</button>
+                {selectedIds.length > 0 && <button type="button" onClick={() => { void Promise.all(selectedIds.map(deleteForMe)); setSelectedIds([]); setShowOverflowMenu(false); }} className="chat-menu-item">Hide selected ({selectedIds.length})</button>}
+                {unread > 0 && <button type="button" onClick={() => { setUnread(0); setShowOverflowMenu(false); }} className="chat-menu-item">Mark {unread} unread as seen</button>}
+                <button type="button" onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }} className="chat-menu-item chat-menu-item-danger">Lock chat</button>
+                {showPrivacySettings && (
+                  <div className="privacy-settings">
+                    <label>Disappearing messages
+                      <select value={ghostLifetime === null ? "keep" : String(ghostLifetime)} onChange={(event) => void updateGhostLifetime(event.target.value)}>
+                        <option value="keep">Off</option>
+                        <option value="10000">10 seconds</option>
+                        <option value="60000">1 minute</option>
+                        <option value="600000">10 minutes</option>
+                        <option value="3600000">1 hour</option>
+                        <option value="86400000">24 hours</option>
+                      </select>
+                    </label>
+                    <label>Conversation mode
+                      <select value={conversationMode} onChange={(event) => void updateConversationMode(event.target.value as ConversationMode)}>
+                        {(["NORMAL", "GHOST", "BURST", "VAULT", "STEALTH", "LIVE"] as ConversationMode[]).map((mode) => <option key={mode}>{mode}</option>)}
+                      </select>
+                    </label>
+                    <label className="privacy-checkbox"><input type="checkbox" checked={viewOnce} onChange={(event) => setViewOnce(event.target.checked)} /> View once media</label>
+                    <button type="button" onClick={() => void toggleDisappearing()} disabled={disappearingLoading} className="privacy-action">{disappearing ? "Turn off 24h chat" : "Turn on 24h chat"}</button>
+                    <button type="button" onClick={() => void startGhostSession(60 * 60 * 1000)} className="privacy-action">Start 1h live session</button>
+                  </div>
+                )}
+                {showMomentsPanel && (
+                  <div className="privacy-settings moments-panel">
+                    <div className="moments-heading"><strong>Moments</strong><span>expire after 24h</span></div>
+                    <div className="moments-list">{moments.map((moment) => <article key={moment.id}><p>{moment.text}</p><small>{moment.senderId === user?.uid ? "You" : "Room member"}</small></article>)}</div>
+                    <div className="moments-compose"><input value={momentInput} onChange={(event) => setMomentInput(event.target.value)} placeholder="Share a temporary text moment" /><button type="button" onClick={() => void sendMoment()} disabled={!momentInput.trim()}>Post</button></div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Disappearing mode banner */}
-      {disappearing && (
-        <div className="disappearing-banner" role="status">
-          ⏳ Disappearing messages on · Messages delete 24h after both participants view them
-        </div>
-      )}
-
-      <div className="chat-tools">
-        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search this room" aria-label="Search messages" />
-        <select value={ghostLifetime === null ? "keep" : String(ghostLifetime)} onChange={(event) => void updateGhostLifetime(event.target.value)} aria-label="Message lifetime">
-          <option value="keep">Keep</option>
-          <option value="10000">10 seconds</option>
-          <option value="60000">1 minute</option>
-          <option value="600000">10 minutes</option>
-          <option value="3600000">1 hour</option>
-          <option value="86400000">24 hours</option>
-        </select>
-        {selectedIds.length > 0 && <button type="button" onClick={() => { void Promise.all(selectedIds.map(deleteForMe)); setSelectedIds([]); }}>Hide selected</button>}
-        <label className="view-once-toggle"><input type="checkbox" checked={viewOnce} onChange={(event) => setViewOnce(event.target.checked)} /> view once</label>
-        {otherTyping && <span className="typing-indicator">Someone is typing</span>}
-        {unread > 0 && <button type="button" onClick={() => setUnread(0)}>{unread} unread</button>}
-      </div>
-
-      <section className="moments-strip" aria-label="Temporary moments">
-        <div className="moments-heading"><strong>Moments</strong><span>expire after 24h</span></div>
-        <div className="moments-list">{moments.map((moment) => <article key={moment.id}><p>{moment.text}</p><small>{moment.senderId === user?.uid ? "You" : "Room member"}</small></article>)}</div>
-        <div className="moments-compose"><input value={momentInput} onChange={(event) => setMomentInput(event.target.value)} placeholder="Share a temporary text moment" /><button type="button" onClick={() => void sendMoment()} disabled={!momentInput.trim()}>Post</button></div>
-      </section>
+      {showSearch && <div className="search-bar"><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search this room" aria-label="Search messages" /><button type="button" onClick={() => { setSearch(""); setShowSearch(false); }} aria-label="Close search">×</button></div>}
 
       {/* Message list */}
       <section
@@ -902,8 +927,8 @@ function ChatInner() {
               style={{ userSelect: "text" } as React.CSSProperties}
             />
 
-            {/* Coded/Revealed toggle — desktop */}
-            <div className="mode-switch mode-switch-desktop" role="group" aria-label="Display mode">
+            {/* One display-mode control shared by desktop and mobile */}
+            <div className="mode-switch mode-switch-display" role="group" aria-label="Display mode">
               <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>Coded</button>
               <button type="button" onClick={() => setRevealed(true)} className={revealed ? "mode-active" : "mode-option"}>Revealed</button>
             </div>
@@ -914,11 +939,7 @@ function ChatInner() {
             </button>
           </div>
 
-          {/* Coded/Revealed toggle — mobile */}
-          <div className="mode-switch mode-switch-mobile" role="group" aria-label="Display mode mobile">
-            <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>Coded</button>
-            <button type="button" onClick={() => setRevealed(true)} className={revealed ? "mode-active" : "mode-option"}>Revealed</button>
-          </div>
+          {otherTyping && <div className="typing-status" role="status">Someone is typing</div>}
         </div>
         {error && <p className="mx-auto mt-2 max-w-3xl text-xs text-red-300">{error}</p>}
       </form>

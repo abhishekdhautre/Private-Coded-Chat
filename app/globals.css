@@ -2,11 +2,11 @@
 
 :root {
   color-scheme: dark;
-  --chat-bg: #0b141a;
-  --chat-panel: #202c33;
-  --chat-green: #005c4b;
-  --chat-incoming: #202c33;
-  --chat-cyan: #21c4d6;
+  --chat-bg: #0e1518;
+  --chat-panel: #192329;
+  --chat-green: #17483f;
+  --chat-incoming: #202c31;
+  --chat-cyan: #8fb8aa;
 }
 
 * { box-sizing: border-box; }
@@ -108,8 +108,10 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 44px;
+  min-height: 44px;
   border-radius: 0.5rem;
   border: 1px solid rgba(233,237,239,0.1);
   background: transparent;
@@ -164,7 +166,20 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 .chat-tools button { min-height: 2.25rem; border: 1px solid rgba(233,237,239,0.1); border-radius: 0.5rem; padding: 0 0.65rem; font-size: 0.7rem; background: #18232a; }
 .typing-indicator { color: #67e8f9; font-size: 0.7rem; }
 .view-once-toggle { display: inline-flex; align-items: center; gap: 0.25rem; color: #fbbf24; font-size: 0.7rem; white-space: nowrap; }
-.moments-strip { flex-shrink: 0; padding: 0.55rem max(0.75rem, env(safe-area-inset-left)); border-bottom: 1px solid rgba(233,237,239,0.06); background: #10191f; }
+.search-bar { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; padding: 0.45rem max(0.75rem, env(safe-area-inset-left)); background: #121b1f; border-bottom: 1px solid rgba(233,237,239,0.06); }
+.search-bar input { min-width: 0; flex: 1; min-height: 44px; border: 1px solid rgba(233,237,239,0.12); border-radius: 0.6rem; background: #0b1114; padding: 0 0.75rem; outline: none; }
+.search-bar button { width: 44px; height: 44px; border: 0; background: transparent; color: #a9b8b5; font-size: 1.4rem; }
+.chat-overflow-menu { position: absolute; z-index: 80; top: calc(100% + 0.5rem); right: 0; width: min(19rem, calc(100vw - 1.5rem)); max-height: min(75dvh, 34rem); overflow-y: auto; border: 1px solid rgba(233,237,239,0.12); border-radius: 0.75rem; background: #182126; box-shadow: 0 12px 30px rgba(0,0,0,0.35); padding: 0.35rem; }
+.chat-menu-item { display: flex; align-items: center; width: 100%; min-height: 44px; border: 0; border-radius: 0.45rem; background: transparent; color: #e5ecea; padding: 0.6rem 0.7rem; text-align: left; font-size: 0.82rem; }
+.chat-menu-item:hover, .chat-menu-item:focus-visible { background: rgba(255,255,255,0.07); outline: none; }
+.chat-menu-item-danger { color: #e6aaa2; }
+.privacy-settings { display: grid; gap: 0.65rem; margin: 0.35rem; padding: 0.75rem; border-top: 1px solid rgba(233,237,239,0.1); color: #aebdb9; font-size: 0.75rem; }
+.privacy-settings label { display: grid; gap: 0.3rem; }
+.privacy-settings select { width: 100%; min-height: 40px; border: 1px solid rgba(233,237,239,0.12); border-radius: 0.45rem; background: #0d1518; color: #eef2f0; padding: 0 0.5rem; }
+.privacy-checkbox { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
+.privacy-action { min-height: 40px; border: 1px solid rgba(143,184,170,0.3); border-radius: 0.45rem; background: rgba(143,184,170,0.08); color: #c7ded5; font-size: 0.75rem; }
+.moments-panel { margin-top: 0; }
+.moments-strip { display: none; }
 .moments-heading { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.75rem; }
 .moments-heading span { color: #64748b; font-size: 0.65rem; }
 .moments-list { display: flex; gap: 0.45rem; overflow-x: auto; padding: 0.4rem 0; }
@@ -188,8 +203,8 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
   overscroll-behavior: contain;
   padding-left: max(0.75rem, env(safe-area-inset-left));
   padding-right: max(0.75rem, env(safe-area-inset-right));
-  padding-top: 1rem;
-  padding-bottom: 1rem;
+  padding-top: 0.9rem;
+  padding-bottom: 0.9rem;
   background-color: var(--chat-bg);
   background-image:
     radial-gradient(rgba(123,152,163,0.09) 1px, transparent 1px),
@@ -236,8 +251,8 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
   word-break: break-word;
   border-radius: 0.55rem;
   padding: 0.5rem 0.65rem 0.35rem;
-  box-shadow: 0 1px 1px rgba(0,0,0,0.2);
-  border: 1px solid rgba(233,237,239,0.08);
+  box-shadow: 0 1px 1px rgba(0,0,0,0.16);
+  border: 1px solid rgba(233,237,239,0.045);
   position: relative;
 }
 .chat-bubble p { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
@@ -337,6 +352,8 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 /* ── Message options ── */
 .msg-options-btn {
   color: #475569;
+  min-width: 44px;
+  min-height: 44px;
   padding: 0.1rem 0.4rem;
   font-size: 0.85rem;
   background: transparent;
@@ -537,6 +554,7 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
   gap: 0.5rem;
   width: 100%;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .btn-attachment {
@@ -623,6 +641,8 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 }
 .mode-switch-desktop { display: inline-flex; flex-shrink: 0; }
 .mode-switch-mobile { display: none; width: 100%; }
+.mode-switch-display { display: inline-flex; flex-shrink: 0; }
+.typing-status { width: 100%; color: #91aaa2; font-size: 0.7rem; padding-left: 0.25rem; }
 
 .mode-option {
   flex: 1 1 0%;
@@ -777,9 +797,12 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 
 /* ── Mobile ── */
 @media (max-width: 600px) {
-  .chat-bubble { max-width: 85%; }
-  .mode-switch-desktop { display: none !important; }
-  .mode-switch-mobile { display: flex !important; width: 100%; }
+  .chat-bubble { max-width: 88%; }
+  .mode-switch-display { flex: 1 0 100%; order: 4; width: 100%; }
+  .mode-switch-desktop, .mode-switch-mobile { display: none !important; }
+  .composer-main { gap: 0.35rem; }
+  .composer-input { flex: 1 1 8rem; }
+  .btn-send { padding-left: 0.9rem; padding-right: 0.9rem; }
   .reaction-trigger { display: none; }
   .gif-grid { grid-template-columns: repeat(2, 1fr); }
   .picker-panel { border-radius: 0; max-height: 280px; }
