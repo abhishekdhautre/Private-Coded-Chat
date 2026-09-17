@@ -1,6 +1,7 @@
 import "./globals.css";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { CryptoProvider } from "@/contexts/CryptoContext";
+import { Analytics } from "@vercel/analytics/next";
 import type { Viewport } from "next";
 
 export const metadata = {
@@ -21,6 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
           <CryptoProvider>{children}</CryptoProvider>
         </AuthProvider>
+        <Analytics />
       </body>
     </html>
   );
