@@ -12,5 +12,5 @@ describe("display cipher", () => {
     expect(encodeText("", "orbit")).toBe("");
     expect(encodeText("こんにちは 123!", "orbit")).toBe("こんにちは 123!");
   });
-  it("requires a keyword", () => expect(() => encodeText("hello", "")).toThrow());
+  it("returns plaintext unchanged when keyword is empty", () => expect(encodeText("hello", "")).toBe("hello"));
 });

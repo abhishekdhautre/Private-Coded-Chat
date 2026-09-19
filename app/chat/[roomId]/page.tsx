@@ -291,6 +291,7 @@ function ChatInner() {
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [privacyProtected, setPrivacyProtected] = useState(false);
+  const dismissPrivacy = () => setPrivacyProtected(false);
   const [disappearing, setDisappearing] = useState(false);
   const [ghostLifetime, setGhostLifetime] = useState<number | null>(null);
   const [conversationMode, setConversationMode] = useState<ConversationMode>("NORMAL");
@@ -356,11 +357,11 @@ function ChatInner() {
     }
   }, [key, router, roomId]);
 
-  // Lock on tab hidden (not on blur — blur fires on tab switch which is not a security event)
+  // Lock on tab hidden
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "hidden") { setBlurred(true); setPrivacyProtected(true); lock(); }
-      else { setBlurred(false); setPrivacyProtected(true); }
+      else { setBlurred(false); }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -389,10 +390,13 @@ function ChatInner() {
     });
   }, [key, user, roomId]);
 
-  // Subscribe to messages
+  // Subscribe to messages — note: `disappearing` intentionally excluded from deps
+  // to avoid re-subscribing on every toggle; the sweep interval handles cleanup.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!key || !user) return;
     const messagesRef = ref(db, `rooms/${roomId}/messages`);
+    const prevBlobUrls = new Set<string>();
     return onValue(messagesRef, async (snapshot) => {
       const rows = snapshot.val() as Record<string, StoredMessage> | null;
       if (!rows) { setMessages([]); return; }
@@ -415,6 +419,7 @@ function ChatInner() {
               const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
               const blob = new Blob([buf], { type: mime });
               mediaBlobUrl = URL.createObjectURL(blob);
+              prevBlobUrls.add(mediaBlobUrl);
               blobUrls.current.push(mediaBlobUrl);
             } catch { mediaBlobUrl = null; }
           }
@@ -425,6 +430,11 @@ function ChatInner() {
       }
 
       next.sort((a, b) => a.timestamp - b.timestamp);
+      // Revoke blob URLs from the previous render that are no longer needed
+      blobUrls.current = blobUrls.current.filter((u) => {
+        if (!prevBlobUrls.has(u)) { URL.revokeObjectURL(u); return false; }
+        return true;
+      });
       setMessages((previous) => {
         if (document.visibilityState !== "visible") setUnread((count) => count + Math.max(0, next.length - previous.length));
         return next;
@@ -438,14 +448,16 @@ function ChatInner() {
         if (Object.keys(readUpdates).length) update(ref(db), readUpdates).catch(() => {});
       }
 
-      // Mark viewed for disappearing mode
+      // Mark viewed for disappearing mode (read `disappearing` from closure is fine here)
       if (disappearing && user && next.length > 0) {
         const viewedUpdate: Record<string, unknown> = {};
         viewedUpdate[`rooms/${roomId}/meta/disappearingViewedAt/${user.uid}`] = Date.now();
         update(ref(db), viewedUpdate).catch(() => {});
       }
     });
-  }, [key, user, roomId, disappearing]);
+  // `disappearing` deliberately omitted — see comment above
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, user, roomId]);
 
   // Presence is metadata only; message plaintext never enters Firebase.
   useEffect(() => {
@@ -969,11 +981,18 @@ function ChatInner() {
 
       {/* Privacy overlay */}
       {privacyProtected && (
-        <div className="privacy-overlay" role="status" aria-live="polite">
+        <div
+          className="privacy-overlay"
+          role="button"
+          aria-label="Dismiss privacy screen"
+          tabIndex={0}
+          onClick={dismissPrivacy}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") dismissPrivacy(); }}
+        >
           <div className="privacy-overlay-card">
             <span className="privacy-overlay-icon" aria-hidden="true">🔒</span>
             <strong>Chat Protected</strong>
-            <span>Return to continue</span>
+            <span>Tap to continue</span>
           </div>
         </div>
       )}

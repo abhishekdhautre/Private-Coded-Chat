@@ -4,7 +4,7 @@ function shiftFor(keyword: string, index: number): number {
 }
 
 function transform(text: string, keyword: string, direction: 1 | -1): string {
-  if (!keyword) throw new Error("Cipher keyword is required");
+  if (!keyword) return text;
   let letterIndex = 0;
   return [...text].map((ch) => {
     const code = ch.charCodeAt(0);

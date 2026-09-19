@@ -33,6 +33,12 @@
                 ".write": "auth != null && $uid == auth.uid && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
                 ".validate": "newData.isNumber()"
               }
+            },
+            "deletedFor": {
+              "$uid": {
+                ".write": "auth != null && $uid == auth.uid && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+                ".validate": "newData.isBoolean()"
+              }
             }
           }
         },
