@@ -346,16 +346,13 @@ function ChatInner() {
     };
   }, [showOverflowMenu]);
 
-  // Redirect if locked — skip the very first render tick to let the
-  // CryptoContext value propagate after navigation from /unlock.
-  const mountedRef = useRef(false);
+  // Redirect to unlock if no key — runs after mount so AuthGuard has
+  // already confirmed the user is authenticated.
   useEffect(() => {
-    if (!mountedRef.current) { mountedRef.current = true; return; }
     if (!key) {
       setMessages([]);
       blobUrls.current.forEach((u) => URL.revokeObjectURL(u));
       blobUrls.current = [];
-      setPrivacyProtected(true);
       router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
     }
   }, [key, router, roomId]);
@@ -751,7 +748,8 @@ function ChatInner() {
 
   const visibleMessages = messages.filter((message) => !search.trim() || message.plaintext.toLowerCase().includes(search.trim().toLowerCase()));
 
-  if (!key) return null;
+  // Show a brief loading state while the redirect effect fires
+  if (!key) return <main className="grid min-h-screen place-items-center text-slate-400">Loading room…</main>;
 
   return (
     <main
