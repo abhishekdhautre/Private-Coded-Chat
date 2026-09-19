@@ -346,8 +346,11 @@ function ChatInner() {
     };
   }, [showOverflowMenu]);
 
-  // Redirect if locked
+  // Redirect if locked — skip the very first render tick to let the
+  // CryptoContext value propagate after navigation from /unlock.
+  const mountedRef = useRef(false);
   useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
     if (!key) {
       setMessages([]);
       blobUrls.current.forEach((u) => URL.revokeObjectURL(u));

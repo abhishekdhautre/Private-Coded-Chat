@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -24,8 +25,14 @@ const CryptoContext = createContext<CryptoContextValue | undefined>(
 export function CryptoProvider({ children }: { children: ReactNode }) {
   const [key, setKey] = useState<CryptoKey | null>(null);
   const [keyword, setKeyword] = useState("");
+  // Timestamp of last unlock — visibility lock is suppressed for 2s after
+  // unlock to survive the brief visibilitychange:hidden that browsers fire
+  // during page navigation.
+  const unlockedAt = useRef(0);
+  const UNLOCK_GRACE_MS = 2000;
 
   const unlock = useCallback((derivedKey: CryptoKey, nextKeyword: string) => {
+    unlockedAt.current = Date.now();
     setKey(derivedKey);
     setKeyword(nextKeyword);
   }, []);
@@ -46,6 +53,8 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
     };
     const handleVisibility = () => {
       if (document.visibilityState === "hidden") {
+        // Ignore the hide event that fires during navigation right after unlock
+        if (Date.now() - unlockedAt.current < UNLOCK_GRACE_MS) return;
         lock();
       } else {
         resetTimer();
