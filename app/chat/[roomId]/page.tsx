@@ -14,10 +14,20 @@ import { StickerPicker } from "@/components/StickerPicker";
 import { GifPicker } from "@/components/GifPicker";
 import { CameraCapture } from "@/components/CameraCapture";
 import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
+import { markChatRead, touchChatMeta, subscribeProfile } from "@/lib/userService";
+import type { UserProfile } from "@/types/user";
 
 const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 const DISAPPEARING_MS = 24 * 60 * 60 * 1000;
+
+function timeAgoChat(ts: number): string {
+  const d = Date.now() - ts;
+  if (d < 60_000) return "just now";
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
+  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
+  return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+}
 
 // ── Media expiry countdown ───────────────────────────────────────────────────
 function MediaTimer({ expiresAt }: { expiresAt: number }) {
@@ -325,6 +335,24 @@ function ChatInner() {
   const disappearingRef = useRef(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
+
+  // ── Friend profile for header ──────────────────────────────────────────────
+  const [friendProfile, setFriendProfile] = useState<UserProfile | null>(null);
+  const otherUid = roomId.includes("__")
+    ? roomId.split("__").find((id) => id !== user?.uid) ?? null
+    : null;
+
+  // Subscribe to friend's profile for live name/avatar/online status
+  useEffect(() => {
+    if (!otherUid) return;
+    return subscribeProfile(otherUid, setFriendProfile);
+  }, [otherUid]);
+
+  // Mark chat as read when entering
+  useEffect(() => {
+    if (!user?.uid || !roomId) return;
+    markChatRead(roomId, user.uid).catch(() => {});
+  }, [user?.uid, roomId]);
 
   // Close attach menu on outside click
   useEffect(() => {
@@ -748,6 +776,7 @@ function ChatInner() {
         msgType: "sticker",
         stickerUrl: emoji,
       });
+      if (otherUid) touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
     } catch { setError("Could not send sticker."); }
     finally { setSending(false); }
   };
@@ -766,6 +795,7 @@ function ChatInner() {
         gifUrl: url,
         gifPreview: preview,
       });
+      if (otherUid) touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
     } catch { setError("Could not send GIF."); }
     finally { setSending(false); }
   };
@@ -798,6 +828,10 @@ function ChatInner() {
         record.viewOnce = viewOnce;
       }
       await push(ref(db, `rooms/${roomId}/messages`), record);
+      // Update chat metadata for chat list
+      if (otherUid) {
+        touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
+      }
       setInput("");
       setReplyingTo(null);
       clearMedia();
@@ -828,11 +862,17 @@ function ChatInner() {
       {/* Header */}
       <header className="chat-header">
         <div className="header-info">
-          <span className="chat-avatar">🔐</span>
+          <span className="chat-avatar">{friendProfile?.photoURL ?? "🔐"}</span>
           <div className="header-text">
-            <h1 className="header-title">Private room</h1>
+            <h1 className="header-title">{friendProfile?.displayName ?? "Private room"}</h1>
             <p className="header-subtitle">
-              🔐 End-to-end encrypted
+              {friendProfile
+                ? friendProfile.online
+                  ? "🟢 Online"
+                  : friendProfile.lastSeen
+                    ? `Last seen ${timeAgoChat(friendProfile.lastSeen)}`
+                    : "🔐 End-to-end encrypted"
+                : "🔐 End-to-end encrypted"}
             </p>
           </div>
         </div>

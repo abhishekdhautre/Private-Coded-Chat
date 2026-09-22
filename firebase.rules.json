@@ -1,5 +1,63 @@
 {
   "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid == $uid",
+        ".validate": "newData.hasChildren(['uid','username','displayName','photoURL','createdAt']) && newData.child('uid').val() == $uid && newData.child('username').isString() && newData.child('displayName').isString() && newData.child('displayName').val().length >= 1 && newData.child('displayName').val().length <= 40 && newData.child('photoURL').isString() && newData.child('createdAt').isNumber()"
+      }
+    },
+    "usernames": {
+      "$username": {
+        ".read": "auth != null",
+        ".write": "auth != null && (!data.exists() && newData.val() == auth.uid || data.val() == auth.uid)",
+        ".validate": "newData.isString() && newData.val().length >= 3"
+      }
+    },
+    "friends": {
+      "$uid": {
+        "$friendUid": {
+          ".read": "auth != null && auth.uid == $uid",
+          ".write": "auth != null && (auth.uid == $uid || auth.uid == $friendUid)"
+        }
+      }
+    },
+    "friendships": {
+      "$friendshipId": {
+        ".read": "auth != null && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid)",
+        ".write": "auth != null && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid || (!data.exists() && (newData.child('participants').child('0').val() == auth.uid || newData.child('participants').child('1').val() == auth.uid)))",
+        ".validate": "newData.hasChildren(['participants','since']) && newData.child('participants').hasChildren(['0','1']) && newData.child('since').isNumber()"
+      }
+    },
+    "userChats": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        "$roomId": {
+          ".write": "auth != null && auth.uid == $uid",
+          ".validate": "newData.hasChildren(['roomId','otherUid','lastMessageAt'])"
+        }
+      }
+    },
+    "friendRequests": {
+      "$requestId": {
+        ".read": "auth != null && (data.child('fromUid').val() == auth.uid || data.child('toUid').val() == auth.uid)",
+        ".write": "auth != null && (!data.exists() && newData.child('fromUid').val() == auth.uid || data.child('fromUid').val() == auth.uid || data.child('toUid').val() == auth.uid)",
+        ".validate": "newData.hasChildren(['fromUid','toUid','status','createdAt']) && newData.child('fromUid').isString() && newData.child('toUid').isString() && newData.child('status').isString() && newData.child('createdAt').isNumber()"
+      }
+    },
+    "chatMeta": {
+      "$roomId": {
+        ".read": "auth != null && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid)",
+        ".write": "auth != null && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid || (!data.exists() && (newData.child('participants').child('0').val() == auth.uid || newData.child('participants').child('1').val() == auth.uid)))",
+        ".validate": "newData.hasChildren(['roomId','participants','lastMessageAt']) && newData.child('roomId').isString() && newData.child('lastMessageAt').isNumber()",
+        "unreadCounts": {
+          "$uid": {
+            ".write": "auth != null && (root.child('chatMeta').child($roomId).child('participants').child('0').val() == auth.uid || root.child('chatMeta').child($roomId).child('participants').child('1').val() == auth.uid)",
+            ".validate": "newData.isNumber()"
+          }
+        }
+      }
+    },
     "rooms": {
       "$roomId": {
         "meta": {
