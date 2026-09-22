@@ -1331,3 +1331,244 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
   .friends-tab { font-size: 0.75rem; padding: 0.6rem 0.35rem; }
   .chat-unread-badge { font-size: 0.6rem; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PHASE 3A — Presence, Notifications, Typing, Chat row actions
+   All new classes are additive. No existing classes changed.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Chat row wrapper (home page — wraps button + context menu) ── */
+.chat-row-wrap {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgba(233,237,239,0.05);
+}
+.chat-row-wrap .chat-row {
+  flex: 1 1 0%;
+  border-bottom: none;
+}
+.chat-row-pinned { background: rgba(143,184,170,0.04); }
+
+.chat-pin-icon { font-size: 0.7rem; margin-right: 0.2rem; }
+.chat-mute-icon { font-size: 0.7rem; margin-right: 0.2rem; opacity: 0.6; }
+
+.chat-row-menu-btn {
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #475569;
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 0.4rem;
+  transition: color 150ms;
+}
+.chat-row-menu-btn:hover { color: #94a3b8; }
+
+.chat-row-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 60;
+  background: #182126;
+  border: 1px solid rgba(233,237,239,0.12);
+  border-radius: 0.65rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  min-width: 11rem;
+  overflow: hidden;
+}
+.chat-row-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.6rem 0.9rem;
+  min-height: 44px;
+  background: transparent;
+  border: none;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms;
+  white-space: nowrap;
+}
+.chat-row-menu-item:hover { background: rgba(255,255,255,0.06); }
+
+/* ── Notification center ── */
+.notif-row-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.85rem max(1rem, env(safe-area-inset-right)) 0.85rem max(1rem, env(safe-area-inset-left));
+  border-bottom: 1px solid rgba(233,237,239,0.05);
+  background: transparent;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms;
+  -webkit-tap-highlight-color: transparent;
+}
+.notif-row-btn:hover { background: rgba(255,255,255,0.04); }
+
+.notif-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  width: 2.75rem;
+  height: 2.75rem;
+}
+.notif-avatar-wrap .notif-avatar {
+  font-size: 1.75rem;
+  line-height: 2.75rem;
+  display: block;
+  text-align: center;
+}
+.notif-type-icon {
+  position: absolute;
+  bottom: -2px;
+  right: -4px;
+  font-size: 0.85rem;
+  line-height: 1;
+  background: var(--chat-panel);
+  border-radius: 50%;
+  padding: 1px;
+}
+.notif-unread-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--chat-cyan);
+}
+.notif-mark-all-btn {
+  font-size: 0.72rem;
+  color: var(--chat-cyan);
+  background: transparent;
+  border: 1px solid rgba(143,184,170,0.3);
+  border-radius: 0.4rem;
+  padding: 0.2rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 150ms;
+}
+.notif-mark-all-btn:hover { background: rgba(143,184,170,0.1); }
+
+/* ── Settings page ── */
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 1rem max(1rem, env(safe-area-inset-right)) 2rem max(1rem, env(safe-area-inset-left));
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(233,237,239,0.08);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.settings-section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  padding: 0.65rem 1rem 0.4rem;
+  margin: 0;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid rgba(233,237,239,0.06);
+}
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(233,237,239,0.05);
+  min-height: 52px;
+  cursor: pointer;
+}
+.settings-toggle-row:last-child { border-bottom: none; }
+.settings-toggle-label {
+  font-size: 0.875rem;
+  color: #e2e8f0;
+}
+.settings-toggle {
+  position: relative;
+  width: 2.75rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: #2a3942;
+  border: none;
+  cursor: pointer;
+  transition: background 200ms;
+  flex-shrink: 0;
+}
+.settings-toggle-on { background: var(--chat-cyan); }
+.settings-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 200ms;
+  pointer-events: none;
+}
+.settings-toggle-on .settings-toggle-thumb { transform: translateX(1.25rem); }
+.settings-select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(233,237,239,0.05);
+  min-height: 52px;
+}
+.settings-select-row:last-child { border-bottom: none; }
+.settings-select {
+  min-height: 36px;
+  border: 1px solid rgba(233,237,239,0.12);
+  border-radius: 0.5rem;
+  background: #0d1518;
+  color: #e2e8f0;
+  padding: 0 0.6rem;
+  font-size: 0.8rem;
+  outline: none;
+  max-width: 10rem;
+}
+.settings-back-btn {
+  background: transparent;
+  border: none;
+  color: var(--chat-cyan);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  min-height: 44px;
+  min-width: 44px;
+  display: flex;
+  align-items: center;
+  border-radius: 0.4rem;
+}
+.settings-saving {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+/* ── Mobile adjustments for Phase 3A ── */
+@media (max-width: 600px) {
+  .chat-row-menu { right: 0; min-width: 9rem; }
+  .settings-select { max-width: 8rem; }
+}

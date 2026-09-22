@@ -560,6 +560,14 @@ function ChatInner() {
     };
   }, [key, roomId, typing, user]);
 
+  // Clear typing presence on unmount (leaving chat)
+  useEffect(() => {
+    if (!key || !user) return;
+    const presencePath = `rooms/${roomId}/presence/${user.uid}`;
+    return () => { remove(ref(db, presencePath)).catch(() => {}); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
+
   useEffect(() => {
     if (!key || !user) return;
     return onValue(ref(db, `rooms/${roomId}/presence`), (snapshot) => {
@@ -833,6 +841,7 @@ function ChatInner() {
         touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
       }
       setInput("");
+      setTyping(false);
       setReplyingTo(null);
       clearMedia();
     } catch {
@@ -1065,7 +1074,7 @@ function ChatInner() {
             </button>
           </div>
 
-          {otherTyping && <div className="typing-status" role="status">Someone is typing</div>}
+          {otherTyping && <div className="typing-status" role="status">{friendProfile?.displayName ?? "Someone"} is typing…</div>}
         </div>
         {error && <p className="mx-auto mt-2 max-w-3xl text-xs text-red-300">{error}</p>}
       </form>
