@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { onValue, push, ref, remove, update, get } from "firebase/database";
+import { onChildAdded, onChildChanged, onChildRemoved, onValue, push, ref, remove, update, get } from "firebase/database";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCrypto } from "@/contexts/CryptoContext";
@@ -317,7 +317,12 @@ function ChatInner() {
   const [showMomentsPanel, setShowMomentsPanel] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const blobUrls = useRef<string[]>([]);
+  // Map<messageId, blobUrl> — lets us revoke individual URLs without touching others
+  const blobUrls = useRef<Map<string, string>>(new Map());
+  // In-memory cache of decrypted messages — avoids re-decrypting on metadata-only changes
+  const messageCache = useRef<Map<string, DecryptedMessage>>(new Map());
+  // Stable ref so the message listener never needs to re-subscribe when disappearing toggles
+  const disappearingRef = useRef(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
 
@@ -351,8 +356,9 @@ function ChatInner() {
   useEffect(() => {
     if (!key) {
       setMessages([]);
-      blobUrls.current.forEach((u) => URL.revokeObjectURL(u));
-      blobUrls.current = [];
+      messageCache.current.clear();
+      for (const u of blobUrls.current.values()) URL.revokeObjectURL(u);
+      blobUrls.current.clear();
       router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
     }
   }, [key, router, roomId]);
@@ -370,7 +376,9 @@ function ChatInner() {
   // Revoke blobs on unmount
   useEffect(() => {
     return () => {
-      blobUrls.current.forEach((u) => URL.revokeObjectURL(u));
+      for (const u of blobUrls.current.values()) URL.revokeObjectURL(u);
+      blobUrls.current.clear();
+      messageCache.current.clear();
       lock();
     };
   }, [lock]);
@@ -390,86 +398,138 @@ function ChatInner() {
     });
   }, [key, user, roomId]);
 
-  // Subscribe to messages — note: `disappearing` intentionally excluded from deps
-  // to avoid re-subscribing on every toggle; the sweep interval handles cleanup.
+  // Keep disappearingRef in sync so the message listener can read it without being in its deps
+  useEffect(() => { disappearingRef.current = disappearing; }, [disappearing]);
+
+  // Subscribe to messages — incremental listeners, subscribed ONCE per room/user/key.
+  // `disappearing` intentionally excluded — read via disappearingRef to avoid re-subscribing.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!key || !user) return;
-    const messagesRef = ref(db, `rooms/${roomId}/messages`);
-    const prevBlobUrls = new Set<string>();
-    return onValue(messagesRef, async (snapshot) => {
-      const rows = snapshot.val() as Record<string, StoredMessage> | null;
-      if (!rows) { setMessages([]); return; }
+    const uid = user.uid;
+    const cryptoKey = key; // capture non-null for use inside async callbacks
+    const msgsPath = `rooms/${roomId}/messages`;
+
+    // Decrypt a single stored row, reuse cached blob URL if media payload unchanged
+    async function decryptRow(id: string, row: StoredMessage): Promise<DecryptedMessage> {
       const now = Date.now();
-      const next: DecryptedMessage[] = [];
+      if (row.expiresAt && row.expiresAt <= now) {
+        remove(ref(db, `${msgsPath}/${id}`)).catch(() => {});
+        throw new Error("expired");
+      }
+      if (row.deletedFor?.[uid]) throw new Error("deleted-for-me");
 
-      for (const [id, row] of Object.entries(rows)) {
-        if (row.expiresAt && row.expiresAt <= now) {
-          remove(ref(db, `rooms/${roomId}/messages/${id}`)).catch(() => {});
-          continue;
-        }
-        if (row.deletedFor?.[user.uid]) continue;
-        try {
-          const plaintext = await decrypt(row.ciphertext, row.iv, key);
-          let mediaBlobUrl: string | null = null;
-          if (row.mediaData && row.mediaIv && row.mediaType) {
-            try {
-              const bytes = await decryptBytes(row.mediaData, row.mediaIv, key);
-              const mime = row.mediaType === "image" ? "image/jpeg" : "video/mp4";
-              const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-              const blob = new Blob([buf], { type: mime });
-              mediaBlobUrl = URL.createObjectURL(blob);
-              prevBlobUrls.add(mediaBlobUrl);
-              blobUrls.current.push(mediaBlobUrl);
-            } catch { mediaBlobUrl = null; }
-          }
-          next.push({ ...row, id, plaintext, mediaBlobUrl });
-        } catch {
-          next.push({ ...row, id, plaintext: "Unable to decrypt message.", mediaBlobUrl: null });
+      const plaintext = await decrypt(row.ciphertext, row.iv, cryptoKey).catch(() => "Unable to decrypt message.");
+
+      const cached = messageCache.current.get(id);
+      let mediaBlobUrl: string | null = cached?.mediaBlobUrl ?? null;
+      if (row.mediaData && row.mediaIv && row.mediaType) {
+        const mediaChanged = !cached || cached.mediaData !== row.mediaData;
+        if (mediaChanged) {
+          const old = blobUrls.current.get(id);
+          if (old) { URL.revokeObjectURL(old); blobUrls.current.delete(id); }
+          try {
+            const bytes = await decryptBytes(row.mediaData, row.mediaIv, cryptoKey);
+            const mime = row.mediaType === "image" ? "image/jpeg" : "video/mp4";
+            const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+            mediaBlobUrl = URL.createObjectURL(new Blob([buf], { type: mime }));
+            blobUrls.current.set(id, mediaBlobUrl);
+          } catch { mediaBlobUrl = null; }
         }
       }
 
-      next.sort((a, b) => a.timestamp - b.timestamp);
-      // Revoke blob URLs from the previous render that are no longer needed
-      blobUrls.current = blobUrls.current.filter((u) => {
-        if (!prevBlobUrls.has(u)) { URL.revokeObjectURL(u); return false; }
-        return true;
-      });
-      setMessages((previous) => {
-        if (document.visibilityState !== "visible") setUnread((count) => count + Math.max(0, next.length - previous.length));
-        return next;
-      });
+      const msg: DecryptedMessage = { ...row, id, plaintext, mediaBlobUrl };
+      messageCache.current.set(id, msg);
+      return msg;
+    }
 
-      if (user) {
-        const readUpdates: Record<string, unknown> = {};
-        next.filter((message) => message.senderId !== user.uid).forEach((message) => {
-          readUpdates[`rooms/${roomId}/messages/${message.id}/readBy/${user.uid}`] = Date.now();
+    // Only write readBy if this user hasn't already marked it
+    function markRead(msg: DecryptedMessage) {
+      if (msg.senderId === uid || msg.readBy?.[uid]) return;
+      update(ref(db), { [`${msgsPath}/${msg.id}/readBy/${uid}`]: Date.now() }).catch(() => {});
+    }
+
+    const unsubAdded = onChildAdded(ref(db, msgsPath), async (snap) => {
+      const id = snap.key!;
+      const row = snap.val() as StoredMessage;
+      try {
+        const msg = await decryptRow(id, row);
+        markRead(msg);
+        if (disappearingRef.current) {
+          update(ref(db), { [`rooms/${roomId}/meta/disappearingViewedAt/${uid}`]: Date.now() }).catch(() => {});
+        }
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === id)) return prev;
+          if (document.visibilityState !== "visible") setUnread((c) => c + 1);
+          const next = [...prev, msg];
+          next.sort((a, b) => a.timestamp - b.timestamp);
+          return next;
         });
-        if (Object.keys(readUpdates).length) update(ref(db), readUpdates).catch(() => {});
+      } catch { /* expired or deleted-for-me — skip */ }
+    });
+
+    const unsubChanged = onChildChanged(ref(db, msgsPath), async (snap) => {
+      const id = snap.key!;
+      const row = snap.val() as StoredMessage;
+
+      if (row.deletedFor?.[uid]) {
+        messageCache.current.delete(id);
+        const old = blobUrls.current.get(id);
+        if (old) { URL.revokeObjectURL(old); blobUrls.current.delete(id); }
+        setMessages((prev) => prev.filter((m) => m.id !== id));
+        return;
       }
 
-      // Mark viewed for disappearing mode (read `disappearing` from closure is fine here)
-      if (disappearing && user && next.length > 0) {
-        const viewedUpdate: Record<string, unknown> = {};
-        viewedUpdate[`rooms/${roomId}/meta/disappearingViewedAt/${user.uid}`] = Date.now();
-        update(ref(db), viewedUpdate).catch(() => {});
+      const cached = messageCache.current.get(id);
+      // Metadata-only change (readBy, reactions, pinned…) — patch without decrypting
+      if (cached && cached.ciphertext === row.ciphertext && cached.mediaData === row.mediaData) {
+        const updated: DecryptedMessage = { ...cached, ...row, id, plaintext: cached.plaintext, mediaBlobUrl: cached.mediaBlobUrl };
+        messageCache.current.set(id, updated);
+        setMessages((prev) => prev.map((m) => m.id === id ? updated : m));
+        return;
+      }
+
+      try {
+        const msg = await decryptRow(id, row);
+        setMessages((prev) => prev.map((m) => m.id === id ? msg : m));
+      } catch {
+        messageCache.current.delete(id);
+        setMessages((prev) => prev.filter((m) => m.id !== id));
       }
     });
-  // `disappearing` deliberately omitted — see comment above
+
+    const unsubRemoved = onChildRemoved(ref(db, msgsPath), (snap) => {
+      const id = snap.key!;
+      messageCache.current.delete(id);
+      const old = blobUrls.current.get(id);
+      if (old) { URL.revokeObjectURL(old); blobUrls.current.delete(id); }
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+    });
+
+    return () => {
+      unsubAdded();
+      unsubChanged();
+      unsubRemoved();
+    };
+  // `disappearing` deliberately omitted — read via disappearingRef
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, user, roomId]);
 
-  // Presence is metadata only; message plaintext never enters Firebase.
+  // Typing presence — debounced. Does NOT re-subscribe on every keystroke.
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!key || !user) return;
-    const typingRef = ref(db, `rooms/${roomId}/presence/${user.uid}`);
-    if (!typing) {
-      remove(typingRef).catch(() => {});
-      return;
+    const presencePath = `rooms/${roomId}/presence/${user.uid}`;
+    if (typing) {
+      update(ref(db), { [presencePath]: { typing: true, at: Date.now() } }).catch(() => {});
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(() => setTyping(false), 2000);
+    } else {
+      remove(ref(db, presencePath)).catch(() => {});
     }
-    update(ref(db), { [`rooms/${roomId}/presence/${user.uid}`]: { typing: true, at: Date.now() } }).catch(() => {});
-    const timeout = window.setTimeout(() => setTyping(false), 2000);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    };
   }, [key, roomId, typing, user]);
 
   useEffect(() => {
@@ -513,7 +573,9 @@ function ChatInner() {
         const expired = prev.filter((m) => m.expiresAt && m.expiresAt <= now);
         expired.forEach((m) => {
           remove(ref(db, `rooms/${roomId}/messages/${m.id}`)).catch(() => {});
-          if (m.mediaBlobUrl) URL.revokeObjectURL(m.mediaBlobUrl);
+          const u = blobUrls.current.get(m.id);
+          if (u) { URL.revokeObjectURL(u); blobUrls.current.delete(m.id); }
+          messageCache.current.delete(m.id);
         });
         return prev.filter((m) => !m.expiresAt || m.expiresAt > now);
       });
