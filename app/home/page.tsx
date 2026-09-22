@@ -1,11 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
 import { PresenceGuard } from "@/components/PresenceGuard";
 import { useAuth } from "@/contexts/AuthContext";
-import { getProfile, subscribeChatList, subscribeProfile, markChatRead } from "@/lib/userService";
+import { getProfile, subscribeChatList, subscribeProfile, markChatRead, pinChat, muteChat } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
 
 function timeAgo(ts: number): string {
@@ -16,60 +16,118 @@ function timeAgo(ts: number): string {
   return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+function isMuted(muteUntil: number | null | undefined): boolean {
+  if (!muteUntil) return false;
+  if (muteUntil === -1) return true;
+  return muteUntil > Date.now();
+}
+
 function ChatRow({
-  roomId,
-  otherUid,
-  lastMessageAt,
-  unread,
-  myUid,
+  roomId, otherUid, lastMessageAt, unread, pinned, muteUntil, myUid,
 }: {
-  roomId: string;
-  otherUid: string;
-  lastMessageAt: number;
-  unread: number;
-  myUid: string;
+  roomId: string; otherUid: string; lastMessageAt: number;
+  unread: number; pinned?: boolean; muteUntil?: number | null; myUid: string;
 }) {
   const router = useRouter();
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const muted = isMuted(muteUntil);
 
   useEffect(() => {
     if (!otherUid) return;
     return subscribeProfile(otherUid, setProfile);
   }, [otherUid]);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [menuOpen]);
+
   function openChat() {
-    // Mark as read before navigating
     if (unread > 0) markChatRead(roomId, myUid).catch(() => {});
     router.push(`/chat/${encodeURIComponent(roomId)}`);
   }
 
+  function handlePin() {
+    pinChat(myUid, roomId, !pinned).catch(() => {});
+    setMenuOpen(false);
+  }
+
+  function handleMute(duration: number | null) {
+    const until = duration === null ? null : duration === -1 ? -1 : Date.now() + duration;
+    muteChat(myUid, roomId, until).catch(() => {});
+    setMenuOpen(false);
+  }
+
   return (
-    <button
-      className="chat-row"
-      onClick={openChat}
-      aria-label={`Open chat with ${profile?.displayName ?? "…"}`}
-    >
-      <div className="chat-row-avatar">
-        <span>{profile?.photoURL ?? "👤"}</span>
-        {profile?.online && <span className="online-dot" aria-label="Online" />}
-      </div>
-      <div className="chat-row-body">
-        <div className="chat-row-top">
-          <span className={`chat-row-name${unread > 0 ? " chat-row-name-unread" : ""}`}>
-            {profile?.displayName ?? "…"}
-          </span>
-          <span className="chat-row-time">{timeAgo(lastMessageAt)}</span>
+    <div className={`chat-row-wrap${pinned ? " chat-row-pinned" : ""}`}>
+      <button
+        className="chat-row"
+        onClick={openChat}
+        aria-label={`Open chat with ${profile?.displayName ?? "…"}`}
+      >
+        <div className="chat-row-avatar">
+          <span>{profile?.photoURL ?? "👤"}</span>
+          {profile?.online && <span className="online-dot" aria-label="Online" />}
         </div>
-        <div className="chat-row-bottom">
-          <p className="chat-row-preview">🔐 New private message</p>
-          {unread > 0 && (
-            <span className="chat-unread-badge" aria-label={`${unread} unread`}>
-              {unread > 99 ? "99+" : unread}
+        <div className="chat-row-body">
+          <div className="chat-row-top">
+            <span className={`chat-row-name${unread > 0 ? " chat-row-name-unread" : ""}`}>
+              {pinned && <span className="chat-pin-icon" aria-label="Pinned">📌</span>}
+              {muted && <span className="chat-mute-icon" aria-label="Muted">🔕</span>}
+              {profile?.displayName ?? "…"}
             </span>
-          )}
+            <span className="chat-row-time">{timeAgo(lastMessageAt)}</span>
+          </div>
+          <div className="chat-row-bottom">
+            <p className="chat-row-preview">🔐 New private message</p>
+            {unread > 0 && !muted && (
+              <span className="chat-unread-badge" aria-label={`${unread} unread`}>
+                {unread > 99 ? "99+" : unread}
+              </span>
+            )}
+          </div>
         </div>
+      </button>
+
+      {/* Context menu trigger */}
+      <div className="relative" ref={menuRef}>
+        <button
+          className="chat-row-menu-btn"
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+          aria-label="Chat options"
+          aria-expanded={menuOpen}
+        >
+          ⋮
+        </button>
+        {menuOpen && (
+          <div className="chat-row-menu">
+            <button className="chat-row-menu-item" onClick={handlePin}>
+              {pinned ? "📌 Unpin" : "📌 Pin chat"}
+            </button>
+            {muted ? (
+              <button className="chat-row-menu-item" onClick={() => handleMute(null)}>🔔 Unmute</button>
+            ) : (
+              <>
+                <button className="chat-row-menu-item" onClick={() => handleMute(3_600_000)}>🔕 Mute 1 hour</button>
+                <button className="chat-row-menu-item" onClick={() => handleMute(8 * 3_600_000)}>🔕 Mute 8 hours</button>
+                <button className="chat-row-menu-item" onClick={() => handleMute(7 * 86_400_000)}>🔕 Mute 1 week</button>
+                <button className="chat-row-menu-item" onClick={() => handleMute(-1)}>🔕 Mute always</button>
+              </>
+            )}
+          </div>
+        )}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -77,20 +135,24 @@ function HomeInner() {
   const { user } = useAuth();
   const router = useRouter();
   const [chats, setChats] = useState<Array<{
-    roomId: string;
-    otherUid: string;
-    lastMessageAt: number;
-    unread: number;
+    roomId: string; otherUid: string; lastMessageAt: number;
+    unread: number; pinned?: boolean; muteUntil?: number | null;
   }>>([]);
   const [profileChecked, setProfileChecked] = useState(false);
+  const [profileError, setProfileError] = useState(false);
 
-  // Redirect to profile setup if no profile
   useEffect(() => {
     if (!user) return;
-    getProfile(user.uid).then((p) => {
-      if (!p) router.replace("/profile-setup");
-      else setProfileChecked(true);
-    });
+    getProfile(user.uid)
+      .then((p) => {
+        if (!p) router.replace("/profile-setup");
+        else setProfileChecked(true);
+      })
+      .catch(() => {
+        // getProfile failed (network/permission error) — unblock the UI
+        setProfileError(true);
+        setProfileChecked(true);
+      });
   }, [user, router]);
 
   useEffect(() => {
@@ -102,16 +164,45 @@ function HomeInner() {
     return <main className="app-page"><p className="loading-text">Loading…</p></main>;
   }
 
-  const totalUnread = chats.reduce((sum, c) => sum + c.unread, 0);
+  if (profileError) {
+    return (
+      <main className="app-page">
+        <div className="empty-home">
+          <span className="text-4xl">⚠️</span>
+          <p>Unable to load your account.</p>
+          <button className="action-btn action-btn-primary" onClick={() => window.location.reload()}>Retry</button>
+        </div>
+      </main>
+    );
+  }
+
+  // Sort: pinned first, then by lastMessageAt desc
+  const sorted = [...chats].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return b.lastMessageAt - a.lastMessageAt;
+  });
+
+  const totalUnread = chats.reduce((sum, c) => sum + (isMuted(c.muteUntil) ? 0 : c.unread), 0);
 
   return (
     <PresenceGuard>
       <main className="app-page">
         <header className="app-header">
           <h1 className="app-header-title">Chats</h1>
-          {totalUnread > 0 && (
-            <span className="app-header-badge-count">{totalUnread > 99 ? "99+" : totalUnread}</span>
-          )}
+          <div className="flex items-center gap-2">
+            {totalUnread > 0 && (
+              <span className="app-header-badge-count">{totalUnread > 99 ? "99+" : totalUnread}</span>
+            )}
+            <button
+              onClick={() => router.push("/settings")}
+              className="header-icon-btn"
+              aria-label="Settings"
+              title="Settings"
+            >
+              ⚙️
+            </button>
+          </div>
         </header>
 
         <div className="chat-list">
@@ -122,7 +213,7 @@ function HomeInner() {
               <p className="text-slate-500 text-sm">Find friends and start a conversation.</p>
             </div>
           )}
-          {chats.map((c) => (
+          {sorted.map((c) => (
             <ChatRow key={c.roomId} {...c} myUid={user!.uid} />
           ))}
         </div>

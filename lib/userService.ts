@@ -64,7 +64,7 @@ export function subscribeProfile(uid: string, cb: (p: UserProfile | null) => voi
 }
 
 // ── Presence ──────────────────────────────────────────────────────────────────
-
+// Kept for legacy callers; PresenceGuard now uses onDisconnect directly.
 export function setOnline(uid: string): void {
   update(ref(db, `users/${uid}`), { online: true, lastSeen: Date.now() }).catch(() => {});
 }
@@ -85,6 +85,14 @@ export async function sendFriendRequest(fromUid: string, toUid: string): Promise
     status: "pending",
     createdAt: Date.now(),
   });
+  // Notify recipient
+  const notifRef = push(ref(db, `notifications/${toUid}`));
+  await set(notifRef, {
+    type: "friend_request",
+    fromUid,
+    read: false,
+    createdAt: Date.now(),
+  }).catch(() => {});
 }
 
 export async function getExistingRequest(
@@ -121,6 +129,14 @@ export async function acceptFriendRequest(requestId: string, fromUid: string, to
     [`friends/${fromUid}/${toUid}`]: { uid: toUid, since },
     [`friends/${toUid}/${fromUid}`]: { uid: fromUid, since },
   });
+  // Notify the original requester that their request was accepted
+  const notifRef = push(ref(db, `notifications/${fromUid}`));
+  await set(notifRef, {
+    type: "friend_accepted",
+    fromUid: toUid,
+    read: false,
+    createdAt: Date.now(),
+  }).catch(() => {});
 }
 
 export async function declineFriendRequest(requestId: string): Promise<void> {
@@ -280,6 +296,16 @@ export async function touchChatMeta(
   await runTransaction(ref(db, `userChats/${otherUid}/${roomId}/unread`), (value) =>
     typeof value === "number" ? value + 1 : 1
   );
+
+  // Push in-app notification to recipient
+  const notifRef = push(ref(db, `notifications/${otherUid}`));
+  await set(notifRef, {
+    type: "message",
+    fromUid: senderUid,
+    roomId,
+    read: false,
+    createdAt: now,
+  }).catch(() => {});
 }
 
 /** Mark all messages as read for this user — resets their unread count to 0. */
@@ -296,7 +322,7 @@ export async function markChatRead(roomId: string, uid: string): Promise<void> {
 
 export function subscribeChatList(
   uid: string,
-  cb: (items: Array<{ roomId: string; otherUid: string; lastMessageAt: number; unread: number }>) => void
+  cb: (items: Array<{ roomId: string; otherUid: string; lastMessageAt: number; unread: number; pinned?: boolean; muteUntil?: number | null }>) => void
 ): () => void {
   const r = ref(db, `userChats/${uid}`);
   const handler = (snap: { exists(): boolean; val(): unknown }) => {
@@ -306,6 +332,8 @@ export function subscribeChatList(
       otherUid: string;
       lastMessageAt: number;
       unread?: number;
+      pinned?: boolean;
+      muteUntil?: number | null;
     }>;
     const items = Object.values(all)
       .filter((c) => c.roomId && c.otherUid)
@@ -314,10 +342,119 @@ export function subscribeChatList(
         otherUid: c.otherUid,
         lastMessageAt: c.lastMessageAt ?? 0,
         unread: c.unread ?? 0,
+        pinned: c.pinned ?? false,
+        muteUntil: c.muteUntil ?? null,
       }))
       .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
     cb(items);
   };
   onValue(r, handler as Parameters<typeof onValue>[1]);
   return () => off(r, "value", handler as Parameters<typeof onValue>[1]);
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+
+export type AppNotification = {
+  id: string;
+  type: "friend_request" | "friend_accepted" | "reaction" | "reply" | "message" | "media";
+  fromUid: string;
+  roomId?: string;
+  messageId?: string;
+  read: boolean;
+  createdAt: number;
+};
+
+export async function pushNotification(
+  toUid: string,
+  n: Omit<AppNotification, "id" | "read">
+): Promise<void> {
+  const r = push(ref(db, `notifications/${toUid}`));
+  await set(r, { ...n, read: false });
+}
+
+export function subscribeNotifications(
+  uid: string,
+  cb: (items: AppNotification[]) => void
+): () => void {
+  const r = ref(db, `notifications/${uid}`);
+  const handler = (snap: { exists(): boolean; val(): unknown }) => {
+    if (!snap.exists()) { cb([]); return; }
+    const all = snap.val() as Record<string, Omit<AppNotification, "id">>;
+    const items = Object.entries(all)
+      .map(([id, v]) => ({ ...v, id }))
+      .sort((a, b) => b.createdAt - a.createdAt);
+    cb(items);
+  };
+  onValue(r, handler as Parameters<typeof onValue>[1]);
+  return () => off(r, "value", handler as Parameters<typeof onValue>[1]);
+}
+
+export async function markNotificationRead(uid: string, notifId: string): Promise<void> {
+  await update(ref(db, `notifications/${uid}/${notifId}`), { read: true });
+}
+
+export async function markAllNotificationsRead(uid: string): Promise<void> {
+  const snap = await get(ref(db, `notifications/${uid}`));
+  if (!snap.exists()) return;
+  const updates: Record<string, boolean> = {};
+  for (const id of Object.keys(snap.val() as Record<string, unknown>)) {
+    updates[`notifications/${uid}/${id}/read`] = true;
+  }
+  await update(ref(db), updates);
+}
+
+// ── User Settings (notification prefs + privacy) ──────────────────────────────
+
+export type UserSettings = {
+  notif_messages: boolean;
+  notif_friendRequests: boolean;
+  notif_reactions: boolean;
+  notif_replies: boolean;
+  notif_media: boolean;
+  notif_preview: boolean;
+  privacy_onlineStatus: "everyone" | "friends" | "nobody";
+  privacy_lastSeen: "everyone" | "friends" | "nobody";
+  privacy_readReceipts: boolean;
+  privacy_typingIndicator: boolean;
+};
+
+export const DEFAULT_SETTINGS: UserSettings = {
+  notif_messages: true,
+  notif_friendRequests: true,
+  notif_reactions: true,
+  notif_replies: true,
+  notif_media: true,
+  notif_preview: false,
+  privacy_onlineStatus: "everyone",
+  privacy_lastSeen: "everyone",
+  privacy_readReceipts: true,
+  privacy_typingIndicator: true,
+};
+
+export async function getUserSettings(uid: string): Promise<UserSettings> {
+  const snap = await get(ref(db, `userSettings/${uid}`));
+  return snap.exists() ? { ...DEFAULT_SETTINGS, ...(snap.val() as Partial<UserSettings>) } : DEFAULT_SETTINGS;
+}
+
+export async function saveUserSettings(uid: string, s: Partial<UserSettings>): Promise<void> {
+  await update(ref(db, `userSettings/${uid}`), s);
+}
+
+export function subscribeUserSettings(uid: string, cb: (s: UserSettings) => void): () => void {
+  const r = ref(db, `userSettings/${uid}`);
+  const handler = (snap: { exists(): boolean; val(): unknown }) => {
+    cb(snap.exists() ? { ...DEFAULT_SETTINGS, ...(snap.val() as Partial<UserSettings>) } : DEFAULT_SETTINGS);
+  };
+  onValue(r, handler as Parameters<typeof onValue>[1]);
+  return () => off(r, "value", handler as Parameters<typeof onValue>[1]);
+}
+
+// ── Pin / Mute chat ───────────────────────────────────────────────────────────
+
+export async function pinChat(uid: string, roomId: string, pinned: boolean): Promise<void> {
+  await update(ref(db, `userChats/${uid}/${roomId}`), { pinned });
+}
+
+export async function muteChat(uid: string, roomId: string, muteUntil: number | null): Promise<void> {
+  await update(ref(db, `userChats/${uid}/${roomId}`), { muteUntil: muteUntil ?? null });
 }

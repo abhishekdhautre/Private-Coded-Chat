@@ -38,6 +38,21 @@
         }
       }
     },
+    "notifications": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        "$notifId": {
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['type','fromUid','read','createdAt']) && newData.child('type').isString() && newData.child('fromUid').isString() && newData.child('read').isBoolean() && newData.child('createdAt').isNumber()"
+        }
+      }
+    },
+    "userSettings": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
     "friendRequests": {
       "$requestId": {
         ".read": "auth != null && (data.child('fromUid').val() == auth.uid || data.child('toUid').val() == auth.uid)",

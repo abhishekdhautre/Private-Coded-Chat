@@ -3,12 +3,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { subscribeChatList, subscribeIncomingRequests } from "@/lib/userService";
+import { subscribeChatList, subscribeIncomingRequests, subscribeNotifications } from "@/lib/userService";
 
 const NAV = [
   { href: "/home", icon: "💬", label: "Chats" },
   { href: "/search", icon: "🔎", label: "Search" },
   { href: "/friends", icon: "👥", label: "Friends" },
+  { href: "/notifications", icon: "🔔", label: "Alerts" },
   { href: "/profile", icon: "👤", label: "Profile" },
 ];
 
@@ -17,16 +18,23 @@ export function BottomNav() {
   const { user } = useAuth();
   const [chatUnread, setChatUnread] = useState(0);
   const [requestCount, setRequestCount] = useState(0);
+  const [notifUnread, setNotifUnread] = useState(0);
 
   useEffect(() => {
     if (!user) return;
     const unsub1 = subscribeChatList(user.uid, (chats) => {
-      setChatUnread(chats.reduce((s, c) => s + c.unread, 0));
+      setChatUnread(chats.reduce((s, c) => {
+        const muted = c.muteUntil && (c.muteUntil === -1 || c.muteUntil > Date.now());
+        return s + (muted ? 0 : c.unread);
+      }, 0));
     });
     const unsub2 = subscribeIncomingRequests(user.uid, (reqs) => {
       setRequestCount(reqs.length);
     });
-    return () => { unsub1(); unsub2(); };
+    const unsub3 = subscribeNotifications(user.uid, (notifs) => {
+      setNotifUnread(notifs.filter((n) => !n.read).length);
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [user]);
 
   if (!user) return null;
@@ -37,7 +45,8 @@ export function BottomNav() {
         const active = path === href || (href !== "/home" && path.startsWith(href));
         const badge =
           href === "/home" && chatUnread > 0 ? chatUnread :
-          href === "/friends" && requestCount > 0 ? requestCount : 0;
+          href === "/friends" && requestCount > 0 ? requestCount :
+          href === "/notifications" && notifUnread > 0 ? notifUnread : 0;
         return (
           <Link
             key={href}
