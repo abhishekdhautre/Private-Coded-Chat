@@ -7,10 +7,9 @@ import { PresenceGuard } from "@/components/PresenceGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   getUidByUsername, getProfile, isFriend,
-  sendFriendRequest, getExistingRequest, cancelFriendRequest,
+  sendFriendRequest, cancelFriendRequest,
 } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
-import type { FriendRequest } from "@/types/user";
 
 type SearchResult = {
   profile: UserProfile;
@@ -49,15 +48,9 @@ function SearchInner() {
       const friend = await isFriend(user.uid, uid);
       if (friend) { setResult({ profile, relation: "friend" }); return; }
 
-      const req: FriendRequest | null = await getExistingRequest(user.uid, uid);
-      if (req) {
-        const relation = req.fromUid === user.uid ? "request-sent" : "request-received";
-        setResult({ profile, relation, requestId: req.id });
-        return;
-      }
-
       setResult({ profile, relation: "none" });
-    } catch {
+    } catch (error) {
+      console.error("[Search] failed:", error);
       setError("Search failed. Please try again.");
     } finally {
       setSearching(false);
@@ -109,7 +102,7 @@ function SearchInner() {
           </div>
 
           {error && <p className="setup-error">{error}</p>}
-          {notFound && <p className="search-not-found">No user found for "{query}"</p>}
+          {notFound && <p className="search-not-found">No user found.</p>}
 
           {p && (
             <div className="profile-card">

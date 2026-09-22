@@ -1,3 +1,6 @@
 {
-  "database": { "rules": "firebase.rules.json" }
+  "database": { "rules": "firebase.rules.json" },
+  "functions": [
+    { "source": "functions", "codebase": "default" }
+  ]
 }

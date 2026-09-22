@@ -1,8 +1,14 @@
 import {
-  get, ref, set, update, remove, push, runTransaction, onValue, off, query, orderByChild, equalTo,
+  get, ref, set, update, remove, push, runTransaction, onValue, off,
 } from "firebase/database";
 import { db } from "@/lib/firebase";
 import { encrypt } from "@/lib/crypto";
+import {
+  acceptFriendRequest as acceptFriendRequestCallable,
+  cancelFriendRequest as cancelFriendRequestCallable,
+  createFriendRequest,
+  declineFriendRequest as declineFriendRequestCallable,
+} from "@/lib/friendRequestService";
 import type { UserProfile, FriendRequest } from "@/types/user";
 
 // ── Username ─────────────────────────────────────────────────────────────────
@@ -76,75 +82,47 @@ export function setOffline(uid: string): void {
 // ── Friend Requests ───────────────────────────────────────────────────────────
 
 export async function sendFriendRequest(fromUid: string, toUid: string): Promise<void> {
-  const existing = await getExistingRequest(fromUid, toUid);
-  if (existing) return;
-  const r = push(ref(db, "friendRequests"));
-  await set(r, {
-    fromUid,
-    toUid,
-    status: "pending",
-    createdAt: Date.now(),
-  });
-  // Notify recipient
-  const notifRef = push(ref(db, `notifications/${toUid}`));
-  await set(notifRef, {
-    type: "friend_request",
-    fromUid,
-    read: false,
-    createdAt: Date.now(),
-  }).catch(() => {});
+  try {
+    // Sender identity comes from callable-function auth, not this legacy UI argument.
+    void fromUid;
+    await createFriendRequest(toUid);
+  } catch (error) {
+    console.error("[FriendRequest] failed:", error);
+    throw error;
+  }
 }
 
 export async function getExistingRequest(
   fromUid: string,
   toUid: string
 ): Promise<FriendRequest | null> {
-  // Check A→B direction using index
-  const q1 = query(ref(db, "friendRequests"), orderByChild("fromUid"), equalTo(fromUid));
-  const snap1 = await get(q1);
-  if (snap1.exists()) {
-    const all = snap1.val() as Record<string, Omit<FriendRequest, "id">>;
-    for (const [id, req] of Object.entries(all)) {
-      if (req.toUid === toUid && req.status === "pending") return { ...req, id };
-    }
-  }
-  // Check B→A direction
-  const q2 = query(ref(db, "friendRequests"), orderByChild("fromUid"), equalTo(toUid));
-  const snap2 = await get(q2);
-  if (snap2.exists()) {
-    const all = snap2.val() as Record<string, Omit<FriendRequest, "id">>;
-    for (const [id, req] of Object.entries(all)) {
-      if (req.toUid === fromUid && req.status === "pending") return { ...req, id };
-    }
+  const snap = await get(ref(db, `friendRequestIndex/${fromUid}`));
+  if (!snap.exists()) return null;
+  const entries = snap.val() as Record<string, {
+    direction: "incoming" | "outgoing";
+    otherUid: string;
+    status: FriendRequest["status"];
+    createdAt: number;
+  }>;
+  for (const [id, entry] of Object.entries(entries)) {
+    if (entry.otherUid !== toUid || entry.status !== "pending") continue;
+    return entry.direction === "outgoing"
+      ? { id, fromUid, toUid, status: entry.status, createdAt: entry.createdAt }
+      : { id, fromUid: toUid, toUid: fromUid, status: entry.status, createdAt: entry.createdAt };
   }
   return null;
 }
 
-export async function acceptFriendRequest(requestId: string, fromUid: string, toUid: string): Promise<void> {
-  await update(ref(db, `friendRequests/${requestId}`), { status: "accepted" });
-  const id = friendshipId(fromUid, toUid);
-  const since = Date.now();
-  await set(ref(db, `friendships/${id}`), { participants: [fromUid, toUid], since });
-  await update(ref(db), {
-    [`friends/${fromUid}/${toUid}`]: { uid: toUid, since },
-    [`friends/${toUid}/${fromUid}`]: { uid: fromUid, since },
-  });
-  // Notify the original requester that their request was accepted
-  const notifRef = push(ref(db, `notifications/${fromUid}`));
-  await set(notifRef, {
-    type: "friend_accepted",
-    fromUid: toUid,
-    read: false,
-    createdAt: Date.now(),
-  }).catch(() => {});
+export async function acceptFriendRequest(requestId: string, _fromUid: string, _toUid: string): Promise<void> {
+  await acceptFriendRequestCallable(requestId);
 }
 
 export async function declineFriendRequest(requestId: string): Promise<void> {
-  await update(ref(db, `friendRequests/${requestId}`), { status: "declined" });
+  await declineFriendRequestCallable(requestId);
 }
 
 export async function cancelFriendRequest(requestId: string): Promise<void> {
-  await remove(ref(db, `friendRequests/${requestId}`));
+  await cancelFriendRequestCallable(requestId);
 }
 
 export async function removeFriend(myUid: string, theirUid: string): Promise<void> {
@@ -173,14 +151,14 @@ export function subscribeIncomingRequests(
   uid: string,
   cb: (reqs: FriendRequest[]) => void
 ): () => void {
-  const r = query(ref(db, "friendRequests"), orderByChild("toUid"), equalTo(uid));
+  const r = ref(db, `friendRequestIndex/${uid}`);
   const handler = (snap: { exists(): boolean; val(): unknown }) => {
     if (!snap.exists()) { cb([]); return; }
-    const all = snap.val() as Record<string, Omit<FriendRequest, "id">>;
+    const all = snap.val() as Record<string, { direction: "incoming" | "outgoing"; otherUid: string; status: FriendRequest["status"]; createdAt: number }>;
     cb(
       Object.entries(all)
-        .filter(([, v]) => v.status === "pending")
-        .map(([id, v]) => ({ ...v, id }))
+        .filter(([, v]) => v.direction === "incoming" && v.status === "pending")
+        .map(([id, v]) => ({ id, fromUid: v.otherUid, toUid: uid, status: v.status, createdAt: v.createdAt }))
     );
   };
   onValue(r, handler as Parameters<typeof onValue>[1]);
@@ -191,14 +169,14 @@ export function subscribeOutgoingRequests(
   uid: string,
   cb: (reqs: FriendRequest[]) => void
 ): () => void {
-  const r = query(ref(db, "friendRequests"), orderByChild("fromUid"), equalTo(uid));
+  const r = ref(db, `friendRequestIndex/${uid}`);
   const handler = (snap: { exists(): boolean; val(): unknown }) => {
     if (!snap.exists()) { cb([]); return; }
-    const all = snap.val() as Record<string, Omit<FriendRequest, "id">>;
+    const all = snap.val() as Record<string, { direction: "incoming" | "outgoing"; otherUid: string; status: FriendRequest["status"]; createdAt: number }>;
     cb(
       Object.entries(all)
-        .filter(([, v]) => v.status === "pending")
-        .map(([id, v]) => ({ ...v, id }))
+        .filter(([, v]) => v.direction === "outgoing" && v.status === "pending")
+        .map(([id, v]) => ({ id, fromUid: uid, toUid: v.otherUid, status: v.status, createdAt: v.createdAt }))
     );
   };
   onValue(r, handler as Parameters<typeof onValue>[1]);
