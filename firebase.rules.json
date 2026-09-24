@@ -16,8 +16,8 @@
     },
     "friends": {
       "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
         "$friendUid": {
-          ".read": "auth != null && auth.uid == $uid",
           ".write": "auth != null && (auth.uid == $uid || auth.uid == $friendUid)"
         }
       }
