@@ -8,7 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useCrypto } from "@/contexts/CryptoContext";
 import { db } from "@/lib/firebase";
 import { decrypt, decryptBytes, encrypt, encryptBytes } from "@/lib/crypto";
-import { encodeText } from "@/lib/cipher";
+import { encodeText, resolveDisplayKeyword } from "@/lib/cipher";
 import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
 import { GifPicker } from "@/components/GifPicker";
@@ -349,6 +349,14 @@ function ChatInner() {
   const otherUid = roomId.includes("__")
     ? roomId.split("__").find((id) => id !== user?.uid) ?? null
     : null;
+
+  // ── Display-cipher keyword (cosmetic only, no crypto involvement) ──────────
+  // V1 rooms supply a passphrase keyword; V2 rooms do not, and an empty keyword
+  // makes encodeText() a no-op, which would leak plaintext in "Coded" mode.
+  // Resolve a stable keyword so V2/V3 rows get the same display transformation
+  // as V1 rows. Recomputed on every render, so toggling Coded <-> Revealed
+  // re-renders already-loaded messages without any re-fetch or re-decryption.
+  const displayKeyword = resolveDisplayKeyword(keyword, !!isV2, roomId);
 
   // Subscribe to friend's profile for live name/avatar/online status
   useEffect(() => {
@@ -1157,7 +1165,7 @@ function ChatInner() {
               m={m}
               isMine={m.senderId === user?.uid}
               revealed={revealed}
-              keyword={keyword}
+              keyword={displayKeyword}
               onDelete={deleteMessage}
               onDeleteForMe={deleteForMe}
               onConsume={consumeMedia}

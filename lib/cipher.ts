@@ -20,3 +20,25 @@ function transform(text: string, keyword: string, direction: 1 | -1): string {
 
 export function encodeText(plain: string, keyword: string): string { return transform(plain, keyword, 1); }
 export function decodeText(coded: string, keyword: string): string { return transform(coded, keyword, -1); }
+
+/**
+ * Resolves the keyword fed into the cosmetic display cipher.
+ *
+ * V1 rooms get a real passphrase keyword from `unlock()`. V2 rooms have no
+ * passphrase — `unlockV2()` deliberately sets an empty keyword — and
+ * `transform()` returns the text untouched for an empty keyword, so "Coded"
+ * mode would render the decrypted plaintext verbatim.
+ *
+ * For V2 rooms we therefore derive a stable display keyword from the roomId.
+ * The roomId is identical on both participants' devices, so both sides render
+ * the same coded text, and it stays constant across reloads — meaning the
+ * Coded/Revealed toggle re-renders already-loaded messages with no re-fetch,
+ * no re-decryption and no re-encryption.
+ *
+ * This is display-only. It never participates in cryptographic decryption and
+ * never alters stored ciphertext or Firebase data.
+ */
+export function resolveDisplayKeyword(keyword: string, isV2: boolean, roomId: string): string {
+  if (keyword) return keyword;
+  return isV2 ? roomId : "";
+}
