@@ -141,6 +141,7 @@ export async function isFriend(myUid: string, theirUid: string): Promise<boolean
 export function subscribeFriends(uid: string, cb: (uids: string[]) => void): () => void {
   const r = ref(db, `friends/${uid}`);
   const handler = (snap: { exists(): boolean; val(): unknown }) => {
+    console.log(`[subscribeFriends] for ${uid}: exists=${snap.exists()}`, snap.val());
     cb(snap.exists() ? Object.keys(snap.val() as Record<string, unknown>) : []);
   };
   onValue(r, handler as Parameters<typeof onValue>[1]);

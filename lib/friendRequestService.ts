@@ -118,7 +118,7 @@ export async function acceptFriendRequest(requestId: string): Promise<void> {
     [`friendRequests/${requestId}/status`]: "accepted",
     [`friendRequestIndex/${req.fromUid}/${requestId}/status`]: "accepted",
     [`friendships/${requestId}`]: {
-      participants: [req.fromUid, req.toUid],
+      participants: { 0: req.fromUid, 1: req.toUid },
       since: now,
     },
     [`friends/${req.fromUid}/${req.toUid}`]: {
@@ -141,9 +141,11 @@ export async function acceptFriendRequest(requestId: string): Promise<void> {
   }
 
   try {
+    console.log("[acceptFriendRequest] executing multi-location update on keys:", Object.keys(updates));
     await update(ref(db), updates);
+    console.log("[acceptFriendRequest] update SUCCESS!");
   } catch (error) {
-    console.error("[acceptFriendRequest] multi-location update failed:", error);
+    console.error("[acceptFriendRequest] multi-location update FAILED:", error);
     // Rollback index claim on failure
     await update(ref(db), { [`friendRequestIndex/${uid}/${requestId}/status`]: "pending" }).catch(() => {});
     throw error;
