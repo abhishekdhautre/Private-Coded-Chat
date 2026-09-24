@@ -276,7 +276,9 @@ export async function verifyRoomKeyEnvelope(
 
 /**
  * Unwraps a room master key envelope for the recipient device.
- * Validates recipient deviceId, epoch, signature, AAD context, and returns a non-extractable room master CryptoKey.
+ * Validates recipient deviceId, epoch, signature, AAD context, and returns an exportable room master CryptoKey
+ * (the V3 ratchet seeds its HKDF chain from the raw epoch key, so the key must remain exportable —
+ * matching createRoomMasterKey()).
  */
 export async function unwrapRoomKey(params: {
   envelope: RoomKeyEnvelopeDTO;
@@ -360,12 +362,15 @@ export async function unwrapRoomKey(params: {
     throw new Error('Failed to decrypt room key envelope. Ciphertext, IV, epoch, or AAD context may be invalid or tampered.');
   }
 
-  // 8. Import raw room key bytes into non-extractable AES-256-GCM CryptoKey
+  // 8. Import raw room key bytes into an exportable AES-256-GCM CryptoKey.
+  // The V3 ratchet derives its initial chain key from the raw epoch key via HKDF
+  // (see initRatchetState), which requires exportKey('raw', ...). Non-extractable
+  // here made every V3 send/recv fail with 'key is not extractable'.
   const roomMasterKey = await globalThis.crypto.subtle.importKey(
     'raw',
     rawRoomKeyBuffer,
     { name: 'AES-GCM', length: 256 },
-    false, // non-extractable once unwrapped
+    true, // exportable so the V3 ratchet can seed its HKDF chain
     ['encrypt', 'decrypt']
   );
 

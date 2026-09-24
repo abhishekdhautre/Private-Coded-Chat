@@ -99,7 +99,9 @@ describe('Phase 3 Room Key Envelope Infrastructure', () => {
 
     expect(unwrappedKey).toBeDefined();
     expect(unwrappedKey.algorithm.name).toBe('AES-GCM');
-    expect(unwrappedKey.extractable).toBe(false); // Non-extractable once unwrapped
+    // Exportable so the V3 ratchet can seed its HKDF chain from the raw epoch key
+    // (matches createRoomMasterKey; non-extractable here broke V3 send/recv).
+    expect(unwrappedKey.extractable).toBe(true);
   });
 
   it('verifies that the raw room master key is never serialized plaintext into the envelope', async () => {

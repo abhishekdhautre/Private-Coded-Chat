@@ -16,7 +16,12 @@ import { CameraCapture } from "@/components/CameraCapture";
 import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
 import { markChatRead, touchChatMeta, subscribeProfile } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
-import { receiveMessageV3, receiveMessageV2, encryptMessageV3 } from "@/lib/messageCryptoV2";
+import {
+  receiveMessageV3,
+  receiveMessageV2,
+  encryptMessageV3,
+  MessageDTOV3,
+} from "@/lib/messageCryptoV2";
 import { acquireV2RoomKey, ensureRoomKeyEnvelopesForMembers } from "@/lib/roomKeyService";
 
 const MEDIA_EXPIRY_MS = 30_000;
@@ -896,15 +901,37 @@ function ChatInner() {
     setError("");
     try {
       if (isV2 && identityPrivateKey && deviceId) {
-        const dto = await encryptMessageV3({
-          roomId,
-          epoch: epoch || 1,
-          senderUid: user.uid,
-          senderDeviceId: deviceId,
-          plaintext: input.trim() || " ",
-          epochKey: key,
-          senderIdentityPrivateKey: identityPrivateKey,
-        });
+        let dto: MessageDTOV3;
+        try {
+          dto = await encryptMessageV3({
+            roomId,
+            epoch: epoch || 1,
+            senderUid: user.uid,
+            senderDeviceId: deviceId,
+            plaintext: input.trim() || " ",
+            epochKey: key,
+            senderIdentityPrivateKey: identityPrivateKey,
+          });
+          // Safe diagnostics only (no keys/plaintext ever logged)
+          console.info("[send:v3:ratchet-ok]", {
+            roomId,
+            epoch: epoch || 1,
+            senderDeviceId: deviceId,
+            sequenceNumber: dto.sequenceNumber,
+          });
+        } catch (err) {
+          console.warn("[send:v3:failed]", {
+            roomId,
+            isV2: true,
+            epoch: epoch || 1,
+            deviceId,
+            identityPrivateKeyAvailable: !!identityPrivateKey,
+            epochRoomKeyAvailable: !!key,
+            ratchetInit: "failed",
+            error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          });
+          throw err;
+        }
         const record: Record<string, unknown> = {
           ...dto,
           senderId: user.uid,
@@ -913,7 +940,16 @@ function ChatInner() {
         if (replyingTo) record.replyTo = replyingTo.id;
         if (ghostLifetime) record.expiresAt = Date.now() + ghostLifetime;
         if (conversationMode === "BURST") record.expiresAt = Date.now() + 60_000;
-        await set(ref(db, `rooms/${roomId}/messages/${dto.messageId}`), record);
+        try {
+          await set(ref(db, `rooms/${roomId}/messages/${dto.messageId}`), record);
+          console.info("[send:v3:write-ok]", { roomId, messageId: dto.messageId });
+        } catch (err) {
+          console.warn("[send:v3:write-failed]", {
+            roomId,
+            error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          });
+          throw err;
+        }
         if (otherUid) {
           await touchChatMeta(roomId, [user.uid, otherUid], user.uid);
         }
@@ -953,7 +989,17 @@ function ChatInner() {
       setTyping(false);
       setReplyingTo(null);
       clearMedia();
-    } catch {
+    } catch (err) {
+      // Safe diagnostics only (no keys/plaintext ever logged)
+      console.warn("[send:failed]", {
+        roomId,
+        isV2,
+        epoch: epoch || 1,
+        deviceId,
+        identityPrivateKeyAvailable: !!identityPrivateKey,
+        epochRoomKeyAvailable: !!key,
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      });
       setError("Message could not be encrypted/sent.");
     } finally {
       setSending(false);
