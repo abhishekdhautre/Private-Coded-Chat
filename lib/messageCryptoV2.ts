@@ -81,6 +81,14 @@ export interface MessagePayloadToSignV3 {
 // In-memory seen-message ID set for local replay protection
 const seenMessageIds = new Set<string>();
 
+/**
+ * Safe diagnostic stage logger for the V3 receive path.
+ * Only ever logs non-secret identifiers and stage markers — never keys or ciphertext.
+ */
+function logV3Stage(stage: string, data: Record<string, unknown> = {}): void {
+  console.info(`[v3-recv:${stage}]`, data);
+}
+
 export function isReplayMessage(messageId: string): boolean {
   return seenMessageIds.has(messageId);
 }
@@ -563,13 +571,54 @@ export async function receiveMessageV3(params: {
   }
 
   if (isReplayMessage(message.messageId)) {
+    logV3Stage('fail-replay', {
+      messageId: message.messageId,
+      senderUid: message.senderUid,
+      senderDeviceId: message.senderDeviceId,
+      epoch: message.epoch,
+      sequenceNumber: message.sequenceNumber,
+    });
     throw new Error(`Replay attack detected: messageId '${message.messageId}' has already been processed.`);
   }
 
+  logV3Stage('start', {
+    messageId: message.messageId,
+    senderUid: message.senderUid,
+    senderDeviceId: message.senderDeviceId,
+    epoch: message.epoch,
+    sequenceNumber: message.sequenceNumber,
+    bundleProvided: !!senderDeviceBundle,
+    epochKeyProvided: !!epochKey,
+  });
+
   let deviceBundle = senderDeviceBundle;
   if (!deviceBundle) {
-    const fetched = await fetchSenderDevice(message.senderUid, message.senderDeviceId);
+    // Production path: no bundle supplied by the chat listener, so we must
+    // fetch the sender's device bundle ourselves and it must verify.
+    let fetched: SignedDeviceIdentityBundle | null = null;
+    try {
+      fetched = await fetchSenderDevice(message.senderUid, message.senderDeviceId);
+      logV3Stage('sender-bundle-fetched', {
+        messageId: message.messageId,
+        senderUid: message.senderUid,
+        senderDeviceId: message.senderDeviceId,
+        found: !!fetched,
+      });
+    } catch (err) {
+      logV3Stage('fail-sender-bundle-fetch', {
+        messageId: message.messageId,
+        senderUid: message.senderUid,
+        senderDeviceId: message.senderDeviceId,
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      });
+      throw err;
+    }
     if (!fetched) {
+      logV3Stage('fail-sender-device-missing', {
+        messageId: message.messageId,
+        senderUid: message.senderUid,
+        senderDeviceId: message.senderDeviceId,
+      });
       throw new Error(
         `Unknown or unregistered device '${message.senderDeviceId}' for sender '${message.senderUid}'.`
       );
@@ -578,6 +627,11 @@ export async function receiveMessageV3(params: {
   }
 
   if (deviceBundle.payload.deviceId !== message.senderDeviceId) {
+    logV3Stage('fail-device-mismatch', {
+      messageId: message.messageId,
+      bundleDeviceId: deviceBundle.payload.deviceId,
+      messageDeviceId: message.senderDeviceId,
+    });
     throw new Error(
       `Sender deviceId mismatch: bundle deviceId '${deviceBundle.payload.deviceId}' vs message deviceId '${message.senderDeviceId}'.`
     );
@@ -589,8 +643,21 @@ export async function receiveMessageV3(params: {
   });
 
   if (!isSigValid) {
+    logV3Stage('fail-message-signature', {
+      messageId: message.messageId,
+      senderUid: message.senderUid,
+      senderDeviceId: message.senderDeviceId,
+      sequenceNumber: message.sequenceNumber,
+    });
     throw new Error('V3 message ECDSA signature verification failed. Message may be forged or tampered.');
   }
+
+  logV3Stage('message-signature-ok', {
+    messageId: message.messageId,
+    senderUid: message.senderUid,
+    senderDeviceId: message.senderDeviceId,
+    sequenceNumber: message.sequenceNumber,
+  });
 
   // Resolve messageKey (check skipped keys store or advance ratchet chain)
   let msgKey = consumeSkippedKey(
@@ -599,6 +666,13 @@ export async function receiveMessageV3(params: {
     message.senderDeviceId,
     message.sequenceNumber
   );
+
+  logV3Stage('ratchet-resolve', {
+    messageId: message.messageId,
+    senderDeviceId: message.senderDeviceId,
+    sequenceNumber: message.sequenceNumber,
+    fromSkippedStore: !!msgKey,
+  });
 
   if (!msgKey) {
     const rootKey = epochKey || getEpochKey(message.roomId, message.epoch);
@@ -617,6 +691,12 @@ export async function receiveMessageV3(params: {
     });
 
     if (message.sequenceNumber < state.sequenceNumber) {
+      logV3Stage('fail-sequence-passed', {
+        messageId: message.messageId,
+        senderDeviceId: message.senderDeviceId,
+        messageSequence: message.sequenceNumber,
+        ratchetSequence: state.sequenceNumber,
+      });
       throw new Error(
         `Sequence number ${message.sequenceNumber} has already passed for active ratchet chain.`
       );
@@ -642,6 +722,12 @@ export async function receiveMessageV3(params: {
     const { messageKey: targetKey } = await advanceRatchetChain(state, message.messageId);
     msgKey = targetKey;
   }
+
+  logV3Stage('ratchet-resolved', {
+    messageId: message.messageId,
+    senderDeviceId: message.senderDeviceId,
+    sequenceNumber: message.sequenceNumber,
+  });
 
   // Decrypt ciphertext using messageKey and V3 AAD
   const ivBytes = base64ToArrayBuffer(message.iv);
@@ -670,7 +756,24 @@ export async function receiveMessageV3(params: {
       ciphertextBytes
     );
     plaintext = new TextDecoder().decode(decryptedBuffer);
-  } catch {
+    logV3Stage('decrypt-success', {
+      messageId: message.messageId,
+      senderUid: message.senderUid,
+      senderDeviceId: message.senderDeviceId,
+      epoch: message.epoch,
+      sequenceNumber: message.sequenceNumber,
+    });
+  } catch (err) {
+    // Surface the real underlying error (e.g. DOMException OperationError) instead
+    // of swallowing it behind a generic message.
+    logV3Stage('fail-aes-gcm-decrypt', {
+      messageId: message.messageId,
+      senderUid: message.senderUid,
+      senderDeviceId: message.senderDeviceId,
+      epoch: message.epoch,
+      sequenceNumber: message.sequenceNumber,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    });
     throw new Error('Failed to decrypt V3 message. Ciphertext, IV, or AAD context mismatch.');
   }
 

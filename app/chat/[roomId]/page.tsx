@@ -521,7 +521,18 @@ function ChatInner() {
             message: rowAny,
             epochKey: cryptoKey,
           });
-        } catch {
+        } catch (err) {
+          // Safe diagnostics: identifiers and stage markers only, never secrets.
+          console.warn("[chat:v3-decrypt-failed]", {
+            messageId: rowAny.messageId ?? id,
+            senderUid: rowAny.senderUid,
+            senderDeviceId: rowAny.senderDeviceId,
+            currentUid: uid,
+            currentDeviceId: deviceId,
+            epoch: rowAny.epoch,
+            sequenceNumber: rowAny.sequenceNumber,
+            error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          });
           plaintext = "Unable to decrypt message.";
         }
       } else if (rowAny.cryptoVersion === "v2" || (rowAny.senderDeviceId && rowAny.signature)) {
