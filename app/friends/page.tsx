@@ -55,8 +55,9 @@ function FriendRow({ uid, myUid, filter }: { uid: string; myUid: string; filter:
     try {
       const roomId = await ensurePrivateRoom(myUid, uid, key ?? undefined);
       router.push(`/chat/${encodeURIComponent(roomId)}`);
-    } catch {
-      router.push(`/chat/${encodeURIComponent(privateRoomId(myUid, uid))}`);
+    } catch (err) {
+      console.error('Failed to create private room:', err);
+      alert('Could not start encrypted chat. Ensure Firebase rules allow room creation and your device is registered.');
     } finally {
       setOpening(false);
     }

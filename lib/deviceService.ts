@@ -115,6 +115,12 @@ export async function registerDevice(
     }
   }
 
+  // Verify the fresh bundle before overwriting the stale record
+  const isFreshValid = await verifyDeviceIdentityBundle(bundle);
+  if (!isFreshValid) {
+    throw new Error("Generated device identity bundle failed self-verification.");
+  }
+
   // Write ONLY public device metadata (NO private keys)
   const payloadToStore: RegisteredDeviceDTO = {
     deviceId: bundle.payload.deviceId,

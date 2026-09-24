@@ -422,20 +422,26 @@ export async function createV2Room(params: {
     envelopes.push(envelope);
   }
 
-  // 3. Write V2 room metadata and key envelopes atomically to Firebase
-  const updates: Record<string, any> = {};
-  updates[`rooms/${roomId}/meta/version`] = 'v2_e2ee';
-  updates[`rooms/${roomId}/meta/currentEpoch`] = 1;
-  updates[`rooms/${roomId}/meta/participants`] = participants;
-  updates[`rooms/${roomId}/meta/createdAt`] = now;
+  // 3. Write V2 room metadata to Firebase first, because keyEnvelope rules depend on meta existing in root
+  const metaUpdates: Record<string, any> = {};
+  metaUpdates[`rooms/${roomId}/meta/version`] = 'v2_e2ee';
+  metaUpdates[`rooms/${roomId}/meta/currentEpoch`] = 1;
+  metaUpdates[`rooms/${roomId}/meta/participants`] = participants;
+  metaUpdates[`rooms/${roomId}/meta/createdAt`] = now;
+  // Include dummy keyCheck to satisfy strict V1 legacy checks / user requirement
+  metaUpdates[`rooms/${roomId}/meta/keyCheck`] = {
+    ciphertext: "v2_e2ee_dummy_ciphertext",
+    iv: "v2_e2ee_dummy_iv"
+  };
+  await update(ref(db), metaUpdates);
 
+  // 4. Write key envelopes atomically
+  const envUpdates: Record<string, any> = {};
   for (const env of envelopes) {
-    updates[`rooms/${roomId}/keyEnvelopes/1/${env.deviceId}`] = env;
-    // Also write to legacy path for Phase 3 backward compatibility
-    updates[`rooms/${roomId}/keyEnvelopes/${env.deviceId}`] = env;
+    envUpdates[`rooms/${roomId}/keyEnvelopes/1/${env.deviceId}`] = env;
   }
 
-  await update(ref(db), updates);
+  await update(ref(db), envUpdates);
 
   // Cache epoch 1 key locally
   setEpochKey(roomId, 1, roomMasterKey);
@@ -683,9 +689,6 @@ export async function ensureRoomKeyEnvelopesForMembers(params: {
         });
 
         updates[`rooms/${roomId}/keyEnvelopes/${currentEpoch}/${devId}`] = envelope;
-        if (currentEpoch === 1) {
-          updates[`rooms/${roomId}/keyEnvelopes/${devId}`] = envelope;
-        }
         needsUpdate = true;
       }
     }

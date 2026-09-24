@@ -385,12 +385,12 @@ describe('Phase 3 Room Key Envelope Infrastructure', () => {
 
     expect(envelopes).toHaveLength(3);
     expect(mockDbStore[`rooms/${roomId}/meta/version`]).toBe('v2_e2ee');
-    expect(mockDbStore[`rooms/${roomId}/keyEnvelopes/alice_phone`]).toBeDefined();
-    expect(mockDbStore[`rooms/${roomId}/keyEnvelopes/alice_laptop`]).toBeDefined();
-    expect(mockDbStore[`rooms/${roomId}/keyEnvelopes/bob_phone`]).toBeDefined();
+    expect(mockDbStore[`rooms/${roomId}/keyEnvelopes/1/alice_phone`]).toBeDefined();
+    expect(mockDbStore[`rooms/${roomId}/keyEnvelopes/1/alice_laptop`]).toBeDefined();
+    expect(mockDbStore[`rooms/${roomId}/keyEnvelopes/1/bob_phone`]).toBeDefined();
 
     // Verify Bob Phone can unwrap its envelope
-    const bobEnv = await getRoomKeyEnvelope(roomId, 'bob_phone');
+    const bobEnv = await getRoomKeyEnvelope(roomId, 'bob_phone', 1);
     expect(bobEnv).not.toBeNull();
 
     const bobUnwrappedKey = await unwrapRoomKey({
@@ -404,7 +404,7 @@ describe('Phase 3 Room Key Envelope Infrastructure', () => {
     expect(bobUnwrappedKey).toBeDefined();
 
     // Verify Alice Laptop can unwrap its envelope
-    const aliceLaptopEnv = await getRoomKeyEnvelope(roomId, 'alice_laptop');
+    const aliceLaptopEnv = await getRoomKeyEnvelope(roomId, 'alice_laptop', 1);
     expect(aliceLaptopEnv).not.toBeNull();
 
     const aliceLaptopUnwrappedKey = await unwrapRoomKey({
