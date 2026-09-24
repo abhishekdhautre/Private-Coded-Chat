@@ -1,4 +1,4 @@
-import { ref, runTransaction, get, update, push } from "firebase/database";
+import { ref, runTransaction, get, update, push, remove } from "firebase/database";
 import { auth, db } from "@/lib/firebase";
 
 export function friendshipId(uidA: string, uidB: string): string {
@@ -17,17 +17,19 @@ export async function createFriendRequest(toUid: string): Promise<string> {
   if (friendSnap.exists()) throw new Error("You are already friends.");
 
   const requestId = friendshipId(fromUid, toUid);
-  const requestRef = ref(db, `friendRequests/${requestId}`);
+  const myIndexRef = ref(db, `friendRequestIndex/${fromUid}/${requestId}`);
 
-  const txResult = await runTransaction(requestRef, (current) => {
+  const now = Date.now();
+
+  const txResult = await runTransaction(myIndexRef, (current) => {
     if (current && current.status === "pending") {
       return; // abort — pending request already exists
     }
     return {
-      fromUid,
-      toUid,
+      direction: "outgoing",
+      otherUid: toUid,
       status: "pending",
-      createdAt: Date.now(),
+      createdAt: now,
     };
   });
 
@@ -35,13 +37,12 @@ export async function createFriendRequest(toUid: string): Promise<string> {
     throw new Error("A pending friend request already exists.");
   }
 
-  const now = txResult.snapshot.val().createdAt;
   const notifId = push(ref(db, `notifications/${toUid}`)).key;
 
   const updates: Record<string, unknown> = {
-    [`friendRequestIndex/${fromUid}/${requestId}`]: {
-      direction: "outgoing",
-      otherUid: toUid,
+    [`friendRequests/${requestId}`]: {
+      fromUid,
+      toUid,
       status: "pending",
       createdAt: now,
     },
@@ -62,7 +63,14 @@ export async function createFriendRequest(toUid: string): Promise<string> {
     };
   }
 
-  await update(ref(db), updates);
+  try {
+    await update(ref(db), updates);
+  } catch (error) {
+    // Release the local index claim if the multi-location update fails
+    await remove(myIndexRef).catch(() => {});
+    throw error;
+  }
+
   return requestId;
 }
 
