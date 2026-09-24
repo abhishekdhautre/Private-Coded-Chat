@@ -96,18 +96,21 @@ export async function getExistingRequest(
   fromUid: string,
   toUid: string
 ): Promise<FriendRequest | null> {
-  const pairKey = friendshipId(fromUid, toUid);
-  const snap = await get(ref(db, `friendRequests/${pairKey}`));
+  const snap = await get(ref(db, `friendRequestIndex/${fromUid}`));
   if (!snap.exists()) return null;
-  const req = snap.val() as { fromUid: string; toUid: string; status: FriendRequest["status"]; createdAt: number };
-  if (req.status !== "pending") return null;
-  return {
-    id: pairKey,
-    fromUid: req.fromUid,
-    toUid: req.toUid,
-    status: req.status,
-    createdAt: req.createdAt,
-  };
+  const entries = snap.val() as Record<string, {
+    direction: "incoming" | "outgoing";
+    otherUid: string;
+    status: FriendRequest["status"];
+    createdAt: number;
+  }>;
+  for (const [id, entry] of Object.entries(entries)) {
+    if (entry.otherUid !== toUid || entry.status !== "pending") continue;
+    return entry.direction === "outgoing"
+      ? { id, fromUid, toUid, status: entry.status, createdAt: entry.createdAt }
+      : { id, fromUid: toUid, toUid: fromUid, status: entry.status, createdAt: entry.createdAt };
+  }
+  return null;
 }
 
 export async function acceptFriendRequest(requestId: string, _fromUid?: string, _toUid?: string): Promise<void> {
