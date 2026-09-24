@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
 import { PresenceGuard } from "@/components/PresenceGuard";
+import { Icon } from "@/components/Icon";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCrypto } from "@/contexts/CryptoContext";
 import {
@@ -71,13 +72,13 @@ function FriendRow({ uid, myUid, filter }: { uid: string; myUid: string; filter:
     finally { setRemoving(false); }
   }
 
-  if (!profile) return <div className="friend-row-skeleton" />;
+  if (!profile) return <div className="friend-row-skeleton" aria-hidden="true" />;
 
   return (
     <div className="friend-row">
       <div className="friend-row-avatar">
         <span>{profile.photoURL}</span>
-        {profile.online && <span className="online-dot" />}
+        {profile.online && <span className="online-dot" aria-label="Online" />}
       </div>
       <div className="friend-row-info">
         <p className="friend-row-name">{profile.displayName}</p>
@@ -95,16 +96,18 @@ function FriendRow({ uid, myUid, filter }: { uid: string; myUid: string; filter:
           disabled={opening}
           className="action-btn action-btn-primary action-btn-sm"
           aria-label={`Message ${profile.displayName}`}
+          title={`Message ${profile.displayName}`}
         >
-          {opening ? "…" : "💬"}
+          {opening ? "…" : <Icon name="send" size={15} />}
         </button>
         <button
           onClick={() => void handleRemove()}
           disabled={removing}
           className="action-btn action-btn-sm action-btn-danger"
           aria-label={`Remove ${profile.displayName}`}
+          title={`Remove ${profile.displayName}`}
         >
-          ✕
+          <Icon name="close" size={15} />
         </button>
       </div>
     </div>
@@ -155,10 +158,10 @@ function IncomingRow({ req, myUid }: { req: FriendRequest; myUid: string }) {
 
   return (
     <div className="notif-row">
-      <div className="notif-avatar">{profile?.photoURL ?? "👤"}</div>
+      <div className="notif-avatar">{profile?.photoURL ?? "?"}</div>
       <div className="notif-body">
         <p className="notif-title">
-          🤝 <strong>{profile?.displayName ?? "Someone"}</strong> wants to be friends
+          <strong>{profile?.displayName ?? "Someone"}</strong> wants to be friends
         </p>
         <p className="notif-sub">@{profile?.username ?? "…"}</p>
       </div>
@@ -200,7 +203,7 @@ function OutgoingRow({ req }: { req: FriendRequest }) {
 
   return (
     <div className="notif-row">
-      <div className="notif-avatar">{profile?.photoURL ?? "👤"}</div>
+      <div className="notif-avatar">{profile?.photoURL ?? "?"}</div>
       <div className="notif-body">
         <p className="notif-title">
           <strong>{profile?.displayName ?? "…"}</strong>
@@ -252,11 +255,13 @@ function FriendsInner() {
         </header>
 
         {/* Tabs */}
-        <div className="friends-tabs">
+        <div className="friends-tabs" role="tablist" aria-label="Friends sections">
           <button
             className={`friends-tab${tab === "friends" ? " friends-tab-active" : ""}`}
             onClick={() => setTab("friends")}
             id="tab-friends"
+            role="tab"
+            aria-selected={tab === "friends"}
           >
             Friends {friendUids.length > 0 && <span className="friends-tab-count">{friendUids.length}</span>}
           </button>
@@ -264,6 +269,8 @@ function FriendsInner() {
             className={`friends-tab${tab === "incoming" ? " friends-tab-active" : ""}`}
             onClick={() => setTab("incoming")}
             id="tab-requests"
+            role="tab"
+            aria-selected={tab === "incoming"}
           >
             Requests {incomingCount > 0 && <span className="friends-tab-badge">{incomingCount}</span>}
           </button>
@@ -271,6 +278,8 @@ function FriendsInner() {
             className={`friends-tab${tab === "outgoing" ? " friends-tab-active" : ""}`}
             onClick={() => setTab("outgoing")}
             id="tab-sent"
+            role="tab"
+            aria-selected={tab === "outgoing"}
           >
             Sent {outgoingCount > 0 && <span className="friends-tab-count">{outgoingCount}</span>}
           </button>

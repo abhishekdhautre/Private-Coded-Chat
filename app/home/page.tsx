@@ -6,6 +6,7 @@ import { BottomNav } from "@/components/BottomNav";
 import { PresenceGuard } from "@/components/PresenceGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import { getProfile, subscribeChatList, subscribeProfile, markChatRead, pinChat, muteChat } from "@/lib/userService";
+import { BrandMark, Icon } from "@/components/Icon";
 import type { UserProfile } from "@/types/user";
 
 function timeAgo(ts: number): string {
@@ -76,20 +77,23 @@ function ChatRow({
         aria-label={`Open chat with ${profile?.displayName ?? "…"}`}
       >
         <div className="chat-row-avatar">
-          <span>{profile?.photoURL ?? "👤"}</span>
+          <span>{profile?.photoURL ?? "?"}</span>
           {profile?.online && <span className="online-dot" aria-label="Online" />}
         </div>
         <div className="chat-row-body">
           <div className="chat-row-top">
             <span className={`chat-row-name${unread > 0 ? " chat-row-name-unread" : ""}`}>
-              {pinned && <span className="chat-pin-icon" aria-label="Pinned">📌</span>}
-              {muted && <span className="chat-mute-icon" aria-label="Muted">🔕</span>}
+              {pinned && <span className="chat-pin-icon" aria-label="Pinned"><Icon name="pinFilled" size={12} /></span>}
+              {muted && <span className="chat-mute-icon" aria-label="Muted"><Icon name="muteFilled" size={12} /></span>}
               {profile?.displayName ?? "…"}
             </span>
             <span className="chat-row-time">{timeAgo(lastMessageAt)}</span>
           </div>
           <div className="chat-row-bottom">
-            <p className="chat-row-preview">🔐 New private message</p>
+            <p className="chat-row-preview">
+              <span className="chat-row-lock" aria-hidden="true"><Icon name="lock" size={11} /></span>
+              {" "}New private message
+            </p>
             {unread > 0 && !muted && (
               <span className="chat-unread-badge" aria-label={`${unread} unread`}>
                 {unread > 99 ? "99+" : unread}
@@ -106,22 +110,39 @@ function ChatRow({
           onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
           aria-label="Chat options"
           aria-expanded={menuOpen}
+          aria-haspopup="menu"
         >
-          ⋮
+          <Icon name="more" size={17} />
         </button>
         {menuOpen && (
-          <div className="chat-row-menu">
-            <button className="chat-row-menu-item" onClick={handlePin}>
-              {pinned ? "📌 Unpin" : "📌 Pin chat"}
+          <div className="chat-row-menu" role="menu" aria-label="Chat options">
+            <button className="chat-row-menu-item" role="menuitem" onClick={handlePin}>
+              <Icon name={pinned ? "pinFilled" : "pin"} size={15} />
+              {pinned ? "Unpin" : "Pin chat"}
             </button>
             {muted ? (
-              <button className="chat-row-menu-item" onClick={() => handleMute(null)}>🔔 Unmute</button>
+              <button className="chat-row-menu-item" role="menuitem" onClick={() => handleMute(null)}>
+                <Icon name="bell" size={15} />
+                Unmute
+              </button>
             ) : (
               <>
-                <button className="chat-row-menu-item" onClick={() => handleMute(3_600_000)}>🔕 Mute 1 hour</button>
-                <button className="chat-row-menu-item" onClick={() => handleMute(8 * 3_600_000)}>🔕 Mute 8 hours</button>
-                <button className="chat-row-menu-item" onClick={() => handleMute(7 * 86_400_000)}>🔕 Mute 1 week</button>
-                <button className="chat-row-menu-item" onClick={() => handleMute(-1)}>🔕 Mute always</button>
+                <button className="chat-row-menu-item" role="menuitem" onClick={() => handleMute(3_600_000)}>
+                  <Icon name="mute" size={15} />
+                  Mute 1 hour
+                </button>
+                <button className="chat-row-menu-item" role="menuitem" onClick={() => handleMute(8 * 3_600_000)}>
+                  <Icon name="mute" size={15} />
+                  Mute 8 hours
+                </button>
+                <button className="chat-row-menu-item" role="menuitem" onClick={() => handleMute(7 * 86_400_000)}>
+                  <Icon name="mute" size={15} />
+                  Mute 1 week
+                </button>
+                <button className="chat-row-menu-item" role="menuitem" onClick={() => handleMute(-1)}>
+                  <Icon name="muteFilled" size={15} />
+                  Mute always
+                </button>
               </>
             )}
           </div>
@@ -188,19 +209,36 @@ function HomeInner() {
   return (
     <PresenceGuard>
       <main className="app-page">
-        <header className="app-header">
-          <h1 className="app-header-title">Chats</h1>
+        <header className="app-header app-header-brand">
+          <div className="app-header-identity">
+            <BrandMark size={26} withWordmark={false} />
+            <div className="app-header-titles">
+              <h1 className="app-header-title">Chats</h1>
+              <p className="app-header-tagline">
+                <Icon name="lock" size={10} />
+                {" "}End-to-end encrypted
+              </p>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             {totalUnread > 0 && (
               <span className="app-header-badge-count">{totalUnread > 99 ? "99+" : totalUnread}</span>
             )}
+            <button
+              onClick={() => router.push("/friends")}
+              className="header-icon-btn"
+              aria-label="Start a new chat"
+              title="New chat"
+            >
+              <Icon name="plus" size={19} />
+            </button>
             <button
               onClick={() => router.push("/settings")}
               className="header-icon-btn"
               aria-label="Settings"
               title="Settings"
             >
-              ⚙️
+              <Icon name="settings" size={19} />
             </button>
           </div>
         </header>
@@ -208,9 +246,13 @@ function HomeInner() {
         <div className="chat-list">
           {chats.length === 0 && (
             <div className="empty-home">
-              <span className="text-4xl">💬</span>
-              <p>No chats yet.</p>
-              <p className="text-slate-500 text-sm">Find friends and start a conversation.</p>
+              <span className="empty-home-mark"><Icon name="chat" size={30} /></span>
+              <p className="empty-home-title">No chats yet</p>
+              <p className="text-sm empty-home-sub">Find friends and start an encrypted conversation.</p>
+              <button className="action-btn action-btn-primary" onClick={() => router.push("/friends")}>
+                <Icon name="users" size={16} />
+                Find friends
+              </button>
             </div>
           )}
           {sorted.map((c) => (

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import { claimUsername, createProfile, getProfile, isUsernameAvailable, isValidUsername } from "@/lib/userService";
+import { BrandMark } from "@/components/Icon";
 
 const AVATARS = ["🧑", "👩", "🧔", "👱", "🧕", "🧑‍💻", "🧑‍🎨", "🧑‍🚀", "🦊", "🐺", "🦁", "🐯"];
 
@@ -72,13 +73,16 @@ function ProfileSetupInner() {
     usernameStatus === "invalid" ? "3–20 chars, lowercase letters, numbers, underscore" : "";
 
   const hintColor =
-    usernameStatus === "available" ? "text-emerald-400" :
-    usernameStatus === "taken" || usernameStatus === "invalid" ? "text-red-400" : "text-slate-500";
+    usernameStatus === "available" ? "setup-hint-ok" :
+    usernameStatus === "taken" || usernameStatus === "invalid" ? "setup-hint-bad" : "";
 
   return (
-    <main className="app-page">
+    <main className="setup-page">
       <div className="setup-card">
-        <p className="setup-brand">Private Coded Chat</p>
+        <div className="setup-brand">
+          <BrandMark size={30} withWordmark={false} />
+        </div>
+        <p className="setup-eyebrow">Private by design</p>
         <h1 className="setup-title">Complete your profile</h1>
         <p className="setup-sub">This is how others will find and recognise you.</p>
 

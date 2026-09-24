@@ -13,6 +13,7 @@ import {
 } from "@/lib/userService";
 import type { AppNotification } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
+import { Icon, type IconName } from "@/components/Icon";
 
 function timeAgo(ts: number): string {
   const d = Date.now() - ts;
@@ -22,13 +23,13 @@ function timeAgo(ts: number): string {
   return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-const NOTIF_ICON: Record<AppNotification["type"], string> = {
-  friend_request: "🤝",
-  friend_accepted: "✅",
-  reaction: "❤️",
-  reply: "↩",
-  message: "🔐",
-  media: "📸",
+const NOTIF_ICON: Record<AppNotification["type"], IconName> = {
+  friend_request: "users",
+  friend_accepted: "check",
+  reaction: "heart",
+  reply: "reply",
+  message: "lock",
+  media: "image",
 };
 
 const NOTIF_LABEL: Record<AppNotification["type"], string> = {
@@ -70,8 +71,8 @@ function NotifRow({
       aria-label={`${profile?.displayName ?? "Someone"} ${NOTIF_LABEL[n.type]}`}
     >
       <div className="notif-avatar-wrap">
-        <span className="notif-avatar">{profile?.photoURL ?? "👤"}</span>
-        <span className="notif-type-icon">{NOTIF_ICON[n.type]}</span>
+        <span className="notif-avatar">{profile?.photoURL ?? "?"}</span>
+        <span className="notif-type-icon" aria-hidden="true"><Icon name={NOTIF_ICON[n.type]} size={12} /></span>
       </div>
       <div className="notif-body">
         <p className="notif-title">

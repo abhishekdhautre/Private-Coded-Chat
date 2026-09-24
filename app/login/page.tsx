@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { AuthShell, AuthError, Field, PasswordVisibilityToggle } from "@/components/auth/AuthShell";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -19,18 +21,18 @@ export default function LoginPage() {
       if (code === "auth/user-not-found" || code === "auth/wrong-password" || code === "auth/invalid-credential") {
         return "Invalid email or password.";
       }
-      if (code === "auth/invalid-email") {
-        return "Please enter a valid email address.";
-      }
+      if (code === "auth/invalid-email") return "Please enter a valid email address.";
       if (code === "auth/network-request-failed") {
         return "Network error. Please check your internet connection.";
       }
+      if (code === "auth/too-many-requests") return "Too many attempts. Please wait and try again.";
     }
     return "Invalid email or password.";
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
@@ -44,53 +46,58 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center p-4 sm:p-6">
-      <form onSubmit={submit} className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[.04] p-6 sm:p-8 shadow-2xl backdrop-blur-xl">
-        <p className="text-xs uppercase tracking-[.25em] text-cyan-300 font-semibold">Private Coded Chat</p>
-        <h1 className="mt-2 text-2xl sm:text-3xl font-semibold text-slate-100">Sign in</h1>
-        <p className="mt-2 mb-6 text-sm text-slate-400">Your Firebase login password is not the chat encryption passphrase.</p>
+    <AuthShell
+      eyebrow="Private by design"
+      title="Welcome back"
+      subtitle="Your conversations are end-to-end encrypted on this device."
+      footer={
+        <>
+          Don&apos;t have an account?{" "}
+          <Link href="/signup" className="setup-link">
+            Create one
+          </Link>
+        </>
+      }
+    >
+      <form className="setup-form" onSubmit={submit} noValidate>
+        <Field
+          id="login-email"
+          label="Email"
+          type="email"
+          value={email}
+          onChange={setEmail}
+          placeholder="you@example.com"
+          autoComplete="email"
+          required
+        />
+        <Field
+          id="login-password"
+          label="Password"
+          type={showPassword ? "text" : "password"}
+          value={password}
+          onChange={setPassword}
+          placeholder="Your account password"
+          autoComplete="current-password"
+          required
+          trailing={
+            <PasswordVisibilityToggle
+              visible={showPassword}
+              onToggle={() => setShowPassword((v) => !v)}
+              inputId="login-password"
+            />
+          }
+        />
 
-        <label className="mb-4 block text-sm font-medium text-slate-300">
-          Email
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400 text-slate-100 placeholder-slate-500"
-          />
-        </label>
+        <AuthError message={error} />
 
-        <label className="mb-4 block text-sm font-medium text-slate-300">
-          Login password
-          <input
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400 text-slate-100 placeholder-slate-500"
-          />
-        </label>
-
-        {error && <p className="my-3 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={busy}
-          className="mt-3 w-full rounded-xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 hover:bg-cyan-300 active:bg-cyan-500 disabled:opacity-50 transition-all cursor-pointer"
-        >
+        <button type="submit" className="setup-btn" disabled={busy} aria-busy={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
 
-        <div className="mt-6 text-center text-sm text-slate-400">
-          Don't have an account?{" "}
-          <Link href="/signup" className="text-cyan-400 font-medium hover:underline">
-            Create account
-          </Link>
-        </div>
+        <p className="setup-hint setup-hint-center">
+          Your account password is not the chat encryption passphrase.
+        </p>
       </form>
-    </main>
+    </AuthShell>
   );
 }

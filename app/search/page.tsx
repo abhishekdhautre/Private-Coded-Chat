@@ -10,6 +10,7 @@ import {
   sendFriendRequest, cancelFriendRequest,
 } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
+import { Icon } from "@/components/Icon";
 
 type SearchResult = {
   profile: UserProfile;
@@ -141,22 +142,23 @@ function SearchInner() {
                 )}
                 {result?.relation === "friend" && (
                   <button onClick={() => router.push(`/chat/${encodeURIComponent(roomIdFor(user!.uid, p.uid))}`)} className="action-btn action-btn-primary">
-                    💬 Message
+                    <Icon name="chat" size={16} />
+                    Message
                   </button>
                 )}
                 {result?.relation === "none" && (
                   <button onClick={() => void handleAdd()} disabled={actionBusy} className="action-btn action-btn-primary">
-                    {actionBusy ? "…" : "+ Add Friend"}
+                    {actionBusy ? "…" : (<><Icon name="plus" size={15} /> Add Friend</>)}
                   </button>
                 )}
                 {result?.relation === "request-sent" && (
                   <button onClick={() => void handleCancel()} disabled={actionBusy} className="action-btn">
-                    {actionBusy ? "…" : "Request Sent ✕"}
+                    {actionBusy ? "…" : (<>Request Sent <Icon name="close" size={14} /></>)}
                   </button>
                 )}
                 {result?.relation === "request-received" && (
                   <button onClick={() => router.push("/notifications")} className="action-btn action-btn-primary">
-                    Respond to Request →
+                    Respond to Request <Icon name="chevronRight" size={15} />
                   </button>
                 )}
               </div>

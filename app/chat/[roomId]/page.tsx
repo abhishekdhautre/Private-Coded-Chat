@@ -13,6 +13,7 @@ import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
 import { GifPicker } from "@/components/GifPicker";
 import { CameraCapture } from "@/components/CameraCapture";
+import { BrandMark, Icon } from "@/components/Icon";
 import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
 import { markChatRead, touchChatMeta, subscribeProfile } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
@@ -89,7 +90,7 @@ function MediaTimer({ expiresAt }: { expiresAt: number }) {
 // ── Message Bubble ───────────────────────────────────────────────────────────
 function MessageBubble({
   m, isMine, revealed, keyword, onDelete, onDeleteForMe, onConsume, onReact, onReply, onEdit, onPin, onSelect, selected, myUid,
-  highlighted = false, rowRef,
+  highlighted = false, groupStart = true, groupEnd = true, rowRef,
 }: {
   m: DecryptedMessage;
   isMine: boolean;
@@ -106,6 +107,10 @@ function MessageBubble({
   selected: boolean;
   myUid: string;
   highlighted?: boolean;
+  /** True when this message starts a new visual group (new sender / long gap). */
+  groupStart?: boolean;
+  /** True when this is the final message of its group; controls the timestamp. */
+  groupEnd?: boolean;
   rowRef?: (el: HTMLElement | null) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -154,9 +159,9 @@ function MessageBubble({
     <div
       ref={rowRef}
       data-message-id={m.id}
-      className={`message-row ${isMine ? "items-end" : "items-start"}${highlighted ? " message-row-highlight" : ""}`}
+      className={`message-row ${isMine ? "items-end" : "items-start"}${groupStart ? "" : " is-group-cont"}${highlighted ? " message-row-highlight" : ""}`}
     >
-      <div className="relative group">
+      <div className={`relative group${groupStart ? " is-group-start" : " is-group-cont"}`}>
         {/* Hover reaction trigger (desktop) */}
         <button
           onClick={() => setReactionOpen((v) => !v)}
@@ -236,17 +241,18 @@ function MessageBubble({
             <p className="whitespace-pre-wrap break-words text-sm leading-6">{display}</p>
           )}
 
-          {/* Meta row */}
-          {!isSticker && (
-            <div className="chat-meta mt-1 flex items-center justify-end gap-2">
-              <span className="text-[10px] text-slate-500">
-                {new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </span>
+          {/* Meta row — timestamp only on the last message of a group keeps the
+              transcript calm without losing context. */}
+          {!isSticker && (groupEnd || m.expiresAt || m.pinned) && (
+            <div className="chat-meta">
+              {groupEnd && (
+                <span>{new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              )}
               {isMedia && m.expiresAt && m.expiresAt > Date.now() && <MediaTimer expiresAt={m.expiresAt} />}
-              {isMedia && m.expiresAt && <span className="text-[10px] text-slate-600">· disappears</span>}
-              {m.editedAt && <span className="text-[10px] text-slate-500">edited</span>}
-              {m.pinned && <span className="text-[10px] text-amber-300">pinned</span>}
-              {m.readBy && Object.keys(m.readBy).length > 1 && <span className="text-[10px] text-cyan-300">read</span>}
+              {isMedia && m.expiresAt && <span>· disappears</span>}
+              {m.editedAt && <span>edited</span>}
+              {m.pinned && <span>· pinned</span>}
+              {m.readBy && Object.keys(m.readBy).length > 1 && <span>· read</span>}
             </div>
           )}
         </div>
@@ -1204,19 +1210,58 @@ function ChatInner() {
 
   const visibleMessages = messages.filter((message) => !search.trim() || message.plaintext.toLowerCase().includes(search.trim().toLowerCase()));
 
-  // Show error or brief loading state
+  /**
+   * Consecutive messages from the same sender within a short window are grouped
+   * so the transcript reads as a rhythm rather than a stack of separate blocks.
+   */
+  const isGroupStart = useCallback((message: DecryptedMessage, index: number): boolean => {
+    if (index === 0) return true;
+    const previous = visibleMessages[index - 1];
+    if (!previous) return true;
+    if (previous.senderId !== message.senderId) return true;
+    // Break the group across a long silence, or when either side is a sticker.
+    if (message.timestamp - previous.timestamp > 5 * 60_000) return true;
+    if (message.msgType === "sticker" || previous.msgType === "sticker") return true;
+    return false;
+  }, [visibleMessages]);
+
+  // Show a proper privacy lock screen instead of a bare icon + error string.
   if (!key) {
     return (
-      <main className="grid min-h-screen place-items-center p-6 text-slate-400">
-        <div className="text-center">
-          <div className="mb-4 text-4xl">🔒</div>
+      <main className="lock-page">
+        <div className="lock-card">
+          <div className="lock-mark">
+            <Icon name="lock" size={26} />
+          </div>
           {error ? (
-            <p className="text-sm text-red-300 font-medium">{error}</p>
+            <>
+              <h1 className="lock-title">Conversation locked</h1>
+              <p className="lock-copy" role="status">{error}</p>
+              <button
+                type="button"
+                className="action-btn action-btn-primary"
+                onClick={() => router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`)}
+              >
+                <Icon name="lockOpen" size={17} />
+                Unlock conversation
+              </button>
+            </>
           ) : unlockingV2 ? (
-            <p className="text-sm text-cyan-300">Unwrapping device keys and initializing ratchet…</p>
+            <>
+              <h1 className="lock-title">Unlocking…</h1>
+              <p className="lock-copy">Unwrapping this device&apos;s room key and initialising the message ratchet.</p>
+            </>
           ) : (
-            <p className="text-sm text-slate-400">Loading room…</p>
+            <>
+              <h1 className="lock-title">Conversation locked</h1>
+              <p className="lock-copy">
+                Your messages remain encrypted and unavailable until this chat is unlocked on this device.
+              </p>
+            </>
           )}
+          <div className="lock-brand">
+            <BrandMark size={22} withWordmark={false} />
+          </div>
         </div>
       </main>
     );
@@ -1261,7 +1306,7 @@ function ChatInner() {
             title="Lock chat"
             aria-label="Lock chat"
           >
-            🔒
+            <Icon name="lock" size={19} />
           </button>
           <div className="relative" ref={overflowMenuRef}>
             <button
@@ -1273,7 +1318,7 @@ function ChatInner() {
               aria-expanded={showOverflowMenu}
               aria-haspopup="menu"
             >
-              ⋮
+              <Icon name="more" size={19} />
             </button>
             {showOverflowMenu && (
               <div
@@ -1295,7 +1340,7 @@ function ChatInner() {
                   <p className="chat-menu-section-label">Chat</p>
 
                   <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("search")}>
-                    <span className="chat-menu-icon" aria-hidden="true">🔍</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="search" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Search messages</span>
                       <span className="chat-menu-hint">Find text in this conversation</span>
@@ -1303,7 +1348,7 @@ function ChatInner() {
                   </button>
 
                   <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("pinned")}>
-                    <span className="chat-menu-icon" aria-hidden="true">📌</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="pin" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Pinned messages</span>
                       <span className="chat-menu-hint">
@@ -1314,7 +1359,7 @@ function ChatInner() {
                   </button>
 
                   <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("media")}>
-                    <span className="chat-menu-icon" aria-hidden="true">🖼️</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="image" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Media</span>
                       <span className="chat-menu-hint">
@@ -1324,7 +1369,7 @@ function ChatInner() {
                   </button>
 
                   <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("moments")}>
-                    <span className="chat-menu-icon" aria-hidden="true">✨</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="sparkle" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Moments</span>
                       <span className="chat-menu-hint">Temporary posts, expire after 24h</span>
@@ -1334,7 +1379,7 @@ function ChatInner() {
 
                   {selectedIds.length > 0 && (
                     <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => { void Promise.all(selectedIds.map(deleteForMe)); setSelectedIds([]); closeOverflowMenu(); }}>
-                      <span className="chat-menu-icon" aria-hidden="true">🙈</span>
+                      <span className="chat-menu-icon" aria-hidden="true"><Icon name="eyeOff" size={18} /></span>
                       <span className="chat-menu-text">
                         <span className="chat-menu-label">Hide selected</span>
                         <span className="chat-menu-hint">Removes {selectedIds.length} message{selectedIds.length === 1 ? "" : "s"} for you only</span>
@@ -1345,7 +1390,7 @@ function ChatInner() {
 
                   {unread > 0 && (
                     <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => { setUnread(0); closeOverflowMenu(); showToast("Marked as seen"); }}>
-                      <span className="chat-menu-icon" aria-hidden="true">✓</span>
+                      <span className="chat-menu-icon" aria-hidden="true"><Icon name="check" size={18} /></span>
                       <span className="chat-menu-text">
                         <span className="chat-menu-label">Mark unread as seen</span>
                         <span className="chat-menu-hint">Clears the unread counter</span>
@@ -1360,7 +1405,7 @@ function ChatInner() {
                   <p className="chat-menu-section-label">Privacy</p>
 
                   <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("privacy")}>
-                    <span className="chat-menu-icon" aria-hidden="true">⏱️</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="clock" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Disappearing messages</span>
                       <span className="chat-menu-hint">
@@ -1381,7 +1426,7 @@ function ChatInner() {
                       showToast(viewOnce ? "View Once off for this session" : "View Once on for this session");
                     }}
                   >
-                    <span className="chat-menu-icon" aria-hidden="true">👁️</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="eye" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">View once media</span>
                       <span className="chat-menu-hint">
@@ -1392,7 +1437,7 @@ function ChatInner() {
                   </button>
 
                   <button type="button" role="menuitem" className="chat-menu-btn chat-menu-btn-danger" onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}>
-                    <span className="chat-menu-icon" aria-hidden="true">🔒</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="lock" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Lock chat</span>
                       <span className="chat-menu-hint">Clears keys and hides this conversation</span>
@@ -1405,7 +1450,7 @@ function ChatInner() {
                   <p className="chat-menu-section-label">Conversation</p>
 
                   <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("privacy")}>
-                    <span className="chat-menu-icon" aria-hidden="true">🎚️</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="sliders" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">Conversation mode</span>
                       <span className="chat-menu-hint">{MODE_HINTS[conversationMode] ?? conversationMode}</span>
@@ -1425,7 +1470,7 @@ function ChatInner() {
                       void toggleDisappearing();
                     }}
                   >
-                    <span className="chat-menu-icon" aria-hidden="true">🗓️</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="calendar" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">{disappearing ? "24h chat is on" : "Turn on 24h chat"}</span>
                       <span className="chat-menu-hint">
@@ -1448,7 +1493,7 @@ function ChatInner() {
                       void startGhostSession(60 * 60 * 1000);
                     }}
                   >
-                    <span className="chat-menu-icon" aria-hidden="true">📡</span>
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="radio" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">
                         {sessionExpiresAt && sessionExpiresAt > Date.now() ? "Live session active" : "Start 1h live session"}
@@ -1480,11 +1525,13 @@ function ChatInner() {
               <p className="text-sm text-slate-500 mt-2">No messages yet. Say hello!</p>
             </div>
           )}
-          {visibleMessages.map((m) => (
+          {visibleMessages.map((m, index) => (
             <MessageBubble
               key={m.id}
               m={m}
               isMine={m.senderId === user?.uid}
+              groupStart={isGroupStart(m, index)}
+              groupEnd={index === visibleMessages.length - 1 || isGroupStart(visibleMessages[index + 1], index + 1)}
               revealed={revealed}
               keyword={displayKeyword}
               onDelete={deleteMessage}
@@ -1624,7 +1671,7 @@ function ChatInner() {
                             style={{ minHeight: "36px" }}
                             onClick={() => { void pinMessage(m.id, false); showToast("Message unpinned"); }}
                           >
-                            <span className="chat-menu-icon" aria-hidden="true">📌</span>
+                            <span className="chat-menu-icon" aria-hidden="true"><Icon name="pin" size={18} /></span>
                             <span className="chat-menu-text"><span className="chat-menu-label">Unpin</span></span>
                           </button>
                         </div>
@@ -1906,7 +1953,7 @@ function ChatInner() {
                 aria-label="Attach media"
                 aria-expanded={showAttachMenu}
               >
-                📎
+                <Icon name="plus" size={20} />
               </button>
               {showAttachMenu && (
                 <div className="attach-menu">
@@ -1950,12 +1997,14 @@ function ChatInner() {
                 onClick={() => setRevealed(false)}
                 className={!revealed ? "mode-active" : "mode-option"}
                 aria-pressed={!revealed}
+                title="Display messages using the privacy display cipher"
               >Coded</button>
               <button
                 type="button"
                 onClick={() => setRevealed(true)}
                 className={revealed ? "mode-active" : "mode-option"}
                 aria-pressed={revealed}
+                title="Display decrypted message text"
               >Revealed</button>
             </div>
 
@@ -1966,8 +2015,9 @@ function ChatInner() {
               className="btn-send"
               aria-label={sending ? "Sending message" : "Send message"}
               aria-busy={sending}
+              title="Send (Enter)"
             >
-              {sending ? "…" : "Send"}
+              {sending ? "…" : <Icon name="send" size={18} />}
             </button>
           </div>
 

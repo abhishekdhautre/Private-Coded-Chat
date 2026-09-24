@@ -2,6 +2,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
+import { BrandMark, Icon } from "@/components/Icon";
+import { AuthError, Field, PasswordVisibilityToggle } from "@/components/auth/AuthShell";
 import { useCrypto } from "@/contexts/CryptoContext";
 import { db } from "@/lib/firebase";
 import { decrypt, deriveKey } from "@/lib/crypto";
@@ -22,6 +24,7 @@ function UnlockInner() {
   const { key, unlock, unlockV2 } = useCrypto();
   const [passphrase, setPassphrase] = useState("");
   const [keyword, setKeyword] = useState("");
+  const [showSecrets, setShowSecrets] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [isV2, setIsV2] = useState(false);
@@ -71,6 +74,7 @@ function UnlockInner() {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
     if (!roomId) {
       setError("Missing room ID.");
       return;
@@ -105,56 +109,70 @@ function UnlockInner() {
 
   if (isV2) {
     return (
-      <main className="grid min-h-screen place-items-center p-6">
-        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[.04] p-8 text-center">
-          <div className="mb-6 text-4xl">🔒</div>
-          <h1 className="text-2xl font-semibold">End-to-end encrypted room</h1>
+      <main className="lock-page">
+        <div className="lock-card">
+          <div className="lock-mark">
+            <Icon name="lock" size={26} />
+          </div>
+          <h1 className="lock-title">End-to-end encrypted room</h1>
           {busy ? (
-            <p className="mt-4 text-sm text-cyan-300">Unwrapping device keys and initializing ratchet…</p>
+            <p className="lock-copy">Unwrapping this device&apos;s room key and initialising the message ratchet…</p>
           ) : error ? (
-            <p className="mt-4 text-sm text-red-300">{error}</p>
+            <p className="lock-copy" role="alert">{error}</p>
           ) : (
-            <p className="mt-4 text-sm text-slate-400">Opening encrypted conversation…</p>
+            <p className="lock-copy">Opening encrypted conversation…</p>
           )}
-          <p className="mt-6 text-xs text-slate-500">Room: {roomId}</p>
+          <div className="lock-brand">
+            <BrandMark size={22} withWordmark={false} />
+          </div>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="grid min-h-screen place-items-center p-6">
-      <form onSubmit={submit} className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[.04] p-8">
-        <div className="mb-6 text-4xl">🔒</div>
-        <h1 className="text-3xl font-semibold">Unlock room</h1>
-        <p className="mt-2 text-sm text-slate-400">The passphrase and display keyword stay in memory only. They are never sent to Firebase.</p>
-        <label className="mt-6 mb-3 block text-sm">
-          Shared encryption passphrase
-          <input
-            autoFocus
-            type="password"
-            required
+    <main className="setup-page">
+      <div className="setup-card">
+        <div className="setup-brand">
+          <BrandMark size={30} withWordmark={false} />
+        </div>
+        <p className="setup-eyebrow">Private by design</p>
+        <h1 className="setup-title">Unlock room</h1>
+        <p className="setup-sub">
+          The passphrase and display keyword stay in this device&apos;s memory only. They are never sent to Firebase.
+        </p>
+        <form className="setup-form" onSubmit={submit} noValidate>
+          <Field
+            id="unlock-passphrase"
+            label="Shared encryption passphrase"
+            type={showSecrets ? "text" : "password"}
             value={passphrase}
-            onChange={(e) => setPassphrase(e.target.value)}
-            className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400"
-          />
-        </label>
-        <label className="mb-3 block text-sm">
-          Shared display keyword
-          <input
-            type="password"
+            onChange={setPassphrase}
+            autoComplete="off"
             required
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400"
+            trailing={
+              <PasswordVisibilityToggle
+                visible={showSecrets}
+                onToggle={() => setShowSecrets((v) => !v)}
+                inputId="unlock-passphrase"
+              />
+            }
           />
-        </label>
-        <p className="text-xs text-slate-500">Room: {roomId || "not specified"}</p>
-        {error && <p className="my-3 text-sm text-red-300">{error}</p>}
-        <button disabled={busy} className="mt-4 w-full rounded-xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 disabled:opacity-50">
-          {busy ? "Deriving key…" : "Unlock"}
-        </button>
-      </form>
+          <Field
+            id="unlock-keyword"
+            label="Shared display keyword"
+            type={showSecrets ? "text" : "password"}
+            value={keyword}
+            onChange={setKeyword}
+            autoComplete="off"
+            required
+          />
+          <AuthError message={error} />
+          <button type="submit" className="setup-btn" disabled={busy} aria-busy={busy}>
+            {busy ? "Deriving key…" : "Unlock"}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }

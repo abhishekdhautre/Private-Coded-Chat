@@ -7,6 +7,7 @@ import { PresenceGuard } from "@/components/PresenceGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeUserSettings, saveUserSettings } from "@/lib/userService";
 import type { UserSettings } from "@/lib/userService";
+import { Icon } from "@/components/Icon";
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
@@ -75,7 +76,10 @@ function SettingsInner() {
     <PresenceGuard>
       <main className="app-page">
         <header className="app-header">
-          <button onClick={() => router.back()} className="settings-back-btn" aria-label="Back">←</button>
+          <button onClick={() => router.back()} className="settings-back-btn" aria-label="Go back">
+            <Icon name="back" size={17} />
+            Back
+          </button>
           <h1 className="app-header-title">Settings</h1>
           {saving && <span className="settings-saving">Saving…</span>}
         </header>
