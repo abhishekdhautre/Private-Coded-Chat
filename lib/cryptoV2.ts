@@ -204,6 +204,25 @@ export function base64ToArrayBuffer(base64: string): ArrayBuffer {
 }
 
 /**
+ * Normalizes a JWK to a canonical form containing only essential fields.
+ * Web Crypto's exportKey('jwk') can include optional fields (alg, key_ops, ext)
+ * that vary between exports, breaking deterministic canonicalization.
+ * For EC P-256 keys, only kty, crv, x, y are required for import/verification.
+ */
+export function normalizeJwk(jwk: JsonWebKey): JsonWebKey {
+  if (jwk.kty === 'EC' && jwk.crv === 'P-256') {
+    return {
+      kty: 'EC',
+      crv: 'P-256',
+      x: jwk.x,
+      y: jwk.y,
+    };
+  }
+  // For other key types, return as-is (shouldn't occur in our codebase)
+  return jwk;
+}
+
+/**
  * Constructs a signed device identity bundle binding ECDH exchange public key to ECDSA identity key.
  */
 export async function createDeviceIdentityBundle(
@@ -212,8 +231,8 @@ export async function createDeviceIdentityBundle(
   exchangeKeyPair: CryptoKeyPair,
   createdAt: number = Date.now()
 ): Promise<SignedDeviceIdentityBundle> {
-  const identityPubKeyJwk = await exportPublicKey(identityKeyPair.publicKey);
-  const exchangePubKeyJwk = await exportPublicKey(exchangeKeyPair.publicKey);
+  const identityPubKeyJwk = normalizeJwk(await exportPublicKey(identityKeyPair.publicKey));
+  const exchangePubKeyJwk = normalizeJwk(await exportPublicKey(exchangeKeyPair.publicKey));
 
   const payload: DeviceIdentityPayload = {
     deviceId,
