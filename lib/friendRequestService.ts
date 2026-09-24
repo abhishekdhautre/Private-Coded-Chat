@@ -66,7 +66,7 @@ export async function createFriendRequest(toUid: string): Promise<string> {
   try {
     await update(ref(db), updates);
   } catch (error) {
-    // Release the local index claim if the multi-location update fails
+    console.error("[createFriendRequest] multi-location update failed:", error);
     await remove(myIndexRef).catch(() => {});
     throw error;
   }
@@ -78,36 +78,45 @@ export async function acceptFriendRequest(requestId: string): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error("You must be logged in to accept friend requests.");
 
-  const requestRef = ref(db, `friendRequests/${requestId}`);
-
-  const txResult = await runTransaction(requestRef, (current) => {
-    if (!current) return;
-    if (current.toUid !== uid) return;
-    if (current.status !== "pending") return;
-
-    return {
-      ...current,
-      status: "accepted",
-    };
-  });
-
-  if (!txResult.committed || !txResult.snapshot.exists()) {
-    throw new Error("Friend request is no longer pending or cannot be accepted.");
+  const reqSnap = await get(ref(db, `friendRequests/${requestId}`));
+  if (!reqSnap.exists()) {
+    throw new Error("Friend request not found.");
   }
 
-  const req = txResult.snapshot.val() as {
+  const req = reqSnap.val() as {
     fromUid: string;
     toUid: string;
     status: string;
     createdAt: number;
   };
 
+  if (req.toUid !== uid) {
+    throw new Error("Only the recipient can accept this friend request.");
+  }
+  if (req.status !== "pending") {
+    throw new Error("Friend request is no longer pending.");
+  }
+
+  // Atomically claim state transition on recipient's own incoming index
+  const myIndexRef = ref(db, `friendRequestIndex/${uid}/${requestId}`);
+  const txResult = await runTransaction(myIndexRef, (current) => {
+    if (!current || current.status !== "pending") return;
+    return {
+      ...current,
+      status: "accepted",
+    };
+  });
+
+  if (!txResult.committed) {
+    throw new Error("Friend request was already handled.");
+  }
+
   const now = Date.now();
   const notifId = push(ref(db, `notifications/${req.fromUid}`)).key;
 
   const updates: Record<string, unknown> = {
+    [`friendRequests/${requestId}/status`]: "accepted",
     [`friendRequestIndex/${req.fromUid}/${requestId}/status`]: "accepted",
-    [`friendRequestIndex/${req.toUid}/${requestId}/status`]: "accepted",
     [`friendships/${requestId}`]: {
       participants: [req.fromUid, req.toUid],
       since: now,
@@ -131,67 +140,102 @@ export async function acceptFriendRequest(requestId: string): Promise<void> {
     };
   }
 
-  await update(ref(db), updates);
+  try {
+    await update(ref(db), updates);
+  } catch (error) {
+    console.error("[acceptFriendRequest] multi-location update failed:", error);
+    // Rollback index claim on failure
+    await update(ref(db), { [`friendRequestIndex/${uid}/${requestId}/status`]: "pending" }).catch(() => {});
+    throw error;
+  }
 }
 
 export async function declineFriendRequest(requestId: string): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error("You must be logged in to decline friend requests.");
 
-  const requestRef = ref(db, `friendRequests/${requestId}`);
+  const reqSnap = await get(ref(db, `friendRequests/${requestId}`));
+  if (!reqSnap.exists()) {
+    throw new Error("Friend request not found.");
+  }
 
-  const txResult = await runTransaction(requestRef, (current) => {
-    if (!current) return;
-    if (current.toUid !== uid) return;
-    if (current.status !== "pending") return;
+  const req = reqSnap.val() as { fromUid: string; toUid: string; status: string };
 
+  if (req.toUid !== uid) {
+    throw new Error("Only the recipient can decline this friend request.");
+  }
+  if (req.status !== "pending") {
+    throw new Error("Friend request is no longer pending.");
+  }
+
+  const myIndexRef = ref(db, `friendRequestIndex/${uid}/${requestId}`);
+  const txResult = await runTransaction(myIndexRef, (current) => {
+    if (!current || current.status !== "pending") return;
     return {
       ...current,
       status: "declined",
     };
   });
 
-  if (!txResult.committed || !txResult.snapshot.exists()) {
-    throw new Error("Friend request is no longer pending or cannot be declined.");
+  if (!txResult.committed) {
+    throw new Error("Friend request was already handled.");
   }
 
-  const req = txResult.snapshot.val() as { fromUid: string; toUid: string; status: string };
-
   const updates: Record<string, unknown> = {
+    [`friendRequests/${requestId}/status`]: "declined",
     [`friendRequestIndex/${req.fromUid}/${requestId}/status`]: "declined",
-    [`friendRequestIndex/${req.toUid}/${requestId}/status`]: "declined",
   };
 
-  await update(ref(db), updates);
+  try {
+    await update(ref(db), updates);
+  } catch (error) {
+    console.error("[declineFriendRequest] multi-location update failed:", error);
+    await update(ref(db), { [`friendRequestIndex/${uid}/${requestId}/status`]: "pending" }).catch(() => {});
+    throw error;
+  }
 }
 
 export async function cancelFriendRequest(requestId: string): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error("You must be logged in to cancel friend requests.");
 
-  const requestRef = ref(db, `friendRequests/${requestId}`);
+  const reqSnap = await get(ref(db, `friendRequests/${requestId}`));
+  if (!reqSnap.exists()) {
+    throw new Error("Friend request not found.");
+  }
 
-  const txResult = await runTransaction(requestRef, (current) => {
-    if (!current) return;
-    if (current.fromUid !== uid) return;
-    if (current.status !== "pending") return;
+  const req = reqSnap.val() as { fromUid: string; toUid: string; status: string };
 
+  if (req.fromUid !== uid) {
+    throw new Error("Only the sender can cancel this friend request.");
+  }
+  if (req.status !== "pending") {
+    throw new Error("Friend request is no longer pending.");
+  }
+
+  const myIndexRef = ref(db, `friendRequestIndex/${uid}/${requestId}`);
+  const txResult = await runTransaction(myIndexRef, (current) => {
+    if (!current || current.status !== "pending") return;
     return {
       ...current,
       status: "cancelled",
     };
   });
 
-  if (!txResult.committed || !txResult.snapshot.exists()) {
-    throw new Error("Friend request is no longer pending or cannot be cancelled.");
+  if (!txResult.committed) {
+    throw new Error("Friend request was already handled.");
   }
 
-  const req = txResult.snapshot.val() as { fromUid: string; toUid: string; status: string };
-
   const updates: Record<string, unknown> = {
-    [`friendRequestIndex/${req.fromUid}/${requestId}/status`]: "cancelled",
+    [`friendRequests/${requestId}/status`]: "cancelled",
     [`friendRequestIndex/${req.toUid}/${requestId}/status`]: "cancelled",
   };
 
-  await update(ref(db), updates);
+  try {
+    await update(ref(db), updates);
+  } catch (error) {
+    console.error("[cancelFriendRequest] multi-location update failed:", error);
+    await update(ref(db), { [`friendRequestIndex/${uid}/${requestId}/status`]: "pending" }).catch(() => {});
+    throw error;
+  }
 }

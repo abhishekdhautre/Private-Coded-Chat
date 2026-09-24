@@ -127,16 +127,26 @@ function IncomingRow({ req, myUid }: { req: FriendRequest; myUid: string }) {
 
   async function accept() {
     setBusy(true);
-    try { await acceptFriendRequest(req.id, req.fromUid, myUid); setDone("accepted"); }
-    catch { /* silent */ }
-    finally { setBusy(false); }
+    try {
+      await acceptFriendRequest(req.id, req.fromUid, myUid);
+      setDone("accepted");
+    } catch (err) {
+      console.error("[IncomingRow.accept] error:", err);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function decline() {
     setBusy(true);
-    try { await declineFriendRequest(req.id); setDone("declined"); }
-    catch { /* silent */ }
-    finally { setBusy(false); }
+    try {
+      await declineFriendRequest(req.id);
+      setDone("declined");
+    } catch (err) {
+      console.error("[IncomingRow.decline] error:", err);
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (done) {
