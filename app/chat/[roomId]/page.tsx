@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { onChildAdded, onChildChanged, onChildRemoved, onValue, push, ref, remove, update, get, set } from "firebase/database";
 import { AuthGuard } from "@/components/AuthGuard";
@@ -28,12 +28,48 @@ const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 const DISAPPEARING_MS = 24 * 60 * 60 * 1000;
 
+/** Panels opened from the chat settings menu. */
+type SheetKind = "search" | "pinned" | "media" | "moments" | "privacy";
+
+/** Existing disappearing-message lifetimes. This is the real supported set. */
+const DISAPPEARING_OPTIONS: { value: string; label: string }[] = [
+  { value: "keep", label: "Off" },
+  { value: "10000", label: "10 seconds" },
+  { value: "60000", label: "1 minute" },
+  { value: "600000", label: "10 minutes" },
+  { value: "3600000", label: "1 hour" },
+  { value: "86400000", label: "24 hours" },
+];
+
+/**
+ * Conversation modes already persisted in room meta.
+ * Only modes with real send/receive behaviour are described as such below.
+ */
+const MODE_HINTS: Record<ConversationMode, string> = {
+  NORMAL: "Standard messaging",
+  GHOST: "Room label; messages persist normally",
+  BURST: "New messages auto-expire after 1 minute",
+  VAULT: "Room label; messages persist normally",
+  STEALTH: "Room label; messages persist normally",
+  LIVE: "Used by live sessions",
+};
+
 function timeAgoChat(ts: number): string {
   const d = Date.now() - ts;
   if (d < 60_000) return "just now";
   if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
   if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
   return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/** Human-readable countdown for a future timestamp. */
+function timeUntilChat(ts: number): string {
+  const d = ts - Date.now();
+  if (d <= 0) return "now";
+  if (d < 60_000) return `in ${Math.max(1, Math.ceil(d / 1000))}s`;
+  if (d < 3_600_000) return `in ${Math.ceil(d / 60_000)}m`;
+  if (d < 86_400_000) return `in ${Math.ceil(d / 3_600_000)}h`;
+  return `in ${Math.ceil(d / 86_400_000)}d`;
 }
 
 // ── Media expiry countdown ───────────────────────────────────────────────────
@@ -53,6 +89,7 @@ function MediaTimer({ expiresAt }: { expiresAt: number }) {
 // ── Message Bubble ───────────────────────────────────────────────────────────
 function MessageBubble({
   m, isMine, revealed, keyword, onDelete, onDeleteForMe, onConsume, onReact, onReply, onEdit, onPin, onSelect, selected, myUid,
+  highlighted = false, rowRef,
 }: {
   m: DecryptedMessage;
   isMine: boolean;
@@ -68,6 +105,8 @@ function MessageBubble({
   onSelect: (id: string) => void;
   selected: boolean;
   myUid: string;
+  highlighted?: boolean;
+  rowRef?: (el: HTMLElement | null) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionOpen, setReactionOpen] = useState(false);
@@ -112,7 +151,11 @@ function MessageBubble({
   };
 
   return (
-    <div className={`message-row ${isMine ? "items-end" : "items-start"}`}>
+    <div
+      ref={rowRef}
+      data-message-id={m.id}
+      className={`message-row ${isMine ? "items-end" : "items-start"}${highlighted ? " message-row-highlight" : ""}`}
+    >
       <div className="relative group">
         {/* Hover reaction trigger (desktop) */}
         <button
@@ -333,6 +376,14 @@ function ChatInner() {
   const [showPrivacySettings, setShowPrivacySettings] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showMomentsPanel, setShowMomentsPanel] = useState(false);
+  // Settings-menu overlay sheet (search / pinned / media / moments / privacy)
+  const [activeSheet, setActiveSheet] = useState<SheetKind | null>(null);
+  // Message currently flashed after jumping to it from search or pinned panels
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // Transient confirmation for persisted setting changes
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  // Full-screen media viewer
+  const [lightbox, setLightbox] = useState<{ url: string; kind: string; viewOnce: boolean } | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Map<messageId, blobUrl> — lets us revoke individual URLs without touching others
@@ -343,6 +394,10 @@ function ChatInner() {
   const disappearingRef = useRef(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
+  // Anchors for scroll-to-message from the search / pinned panels
+  const messageAnchors = useRef<Map<string, HTMLElement>>(new Map());
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Friend profile for header ──────────────────────────────────────────────
   const [friendProfile, setFriendProfile] = useState<UserProfile | null>(null);
@@ -395,16 +450,123 @@ function ChatInner() {
     };
   }, [showAttachMenu]);
 
+  // ── Overlay management: Escape closes lightbox → sheet → menu (in order) ──
   useEffect(() => {
-    if (!showOverflowMenu) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowOverflowMenu(false);
+    if (!showOverflowMenu && !activeSheet && !lightbox) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (lightbox) {
+        setLightbox(null);
+        return;
+      }
+      if (activeSheet) {
+        setActiveSheet(null);
+        setShowSearch(false);
+        setSearch("");
+        setShowMomentsPanel(false);
+        setShowPrivacySettings(false);
+        return;
+      }
+      setShowOverflowMenu(false);
     };
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", onKeyDown);
     };
-  }, [showOverflowMenu]);
+  }, [showOverflowMenu, activeSheet, lightbox]);
+
+  // Lock body scroll while a sheet or lightbox is open
+  useEffect(() => {
+    if (!activeSheet && !lightbox) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [activeSheet, lightbox]);
+
+  // Clear pending highlight/toast timers on unmount
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const closeOverflowMenu = useCallback(() => {
+    setShowOverflowMenu(false);
+  }, []);
+
+  const openSheet = useCallback((kind: SheetKind) => {
+    setShowOverflowMenu(false);
+    setActiveSheet(kind);
+    if (kind === "search") setShowSearch(true);
+    if (kind === "moments") setShowMomentsPanel(true);
+    if (kind === "privacy") setShowPrivacySettings(true);
+  }, []);
+
+  const closeSheet = useCallback(() => {
+    setActiveSheet(null);
+    setShowSearch(false);
+    setSearch("");
+    setShowMomentsPanel(false);
+    setShowPrivacySettings(false);
+  }, []);
+
+  const showToast = useCallback((message: string) => {
+    setToastMsg(message);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastMsg(null), 2600);
+  }, []);
+
+  /** Scroll a message into view and flash it. Uses existing decrypted messages only. */
+  const jumpToMessage = useCallback(
+    (id: string) => {
+      setHighlightedId(id);
+      const node = messageAnchors.current.get(id);
+      if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 2200);
+      // Close the panel so the flashed message is actually visible.
+      setActiveSheet(null);
+      setShowSearch(false);
+      setSearch("");
+    },
+    []
+  );
+
+  // ── Derived collections (all from already-decrypted local messages) ────────
+  const pinnedMessages = useMemo(
+    () => messages.filter((m) => m.pinned).slice().reverse(),
+    [messages]
+  );
+
+  const mediaItems = useMemo(
+    () => messages.filter((m) => !!m.mediaBlobUrl && (m.mediaType === "image" || m.mediaType === "video")),
+    [messages]
+  );
+  const mediaImages = useMemo(() => mediaItems.filter((m) => m.mediaType === "image"), [mediaItems]);
+  const mediaVideos = useMemo(() => mediaItems.filter((m) => m.mediaType === "video"), [mediaItems]);
+
+  // Client-side search only — plaintext is never sent anywhere.
+  const searchResults = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return [];
+    return messages.filter((m) => m.plaintext.toLowerCase().includes(query));
+  }, [messages, search]);
+
+  const openMediaViewer = useCallback(
+    (item: DecryptedMessage) => {
+      if (!item.mediaBlobUrl) return;
+      // Preserve the existing view-once consumption flow.
+      if (item.viewOnce && !item.consumedBy?.[user?.uid ?? ""]) {
+        void consumeMedia(item.id);
+      }
+      setLightbox({ url: item.mediaBlobUrl, kind: item.mediaType === "video" ? "video" : "image", viewOnce: !!item.viewOnce });
+    },
+    [user?.uid]
+  );
 
   // Automatic unlock for V2 rooms or redirect to unlock for V1 rooms
   useEffect(() => {
@@ -751,15 +913,17 @@ function ChatInner() {
     return () => clearInterval(id);
   }, [disappearing, user, roomId]);
 
-  // Toggle disappearing mode
+  // Toggle 24h disappearing chat
   const toggleDisappearing = async () => {
     if (!user) return;
     setDisappearingLoading(true);
+    const next = !disappearing;
     try {
       await update(ref(db, `rooms/${roomId}/meta`), {
-        disappearing: !disappearing,
+        disappearing: next,
         disappearingViewedAt: null,
       });
+      showToast(next ? "24h chat enabled" : "24h chat turned off");
     } catch {
       setError("Could not update disappearing mode.");
     } finally {
@@ -772,12 +936,17 @@ function ChatInner() {
     setGhostLifetime(lifetime);
     try {
       await update(ref(db, `rooms/${roomId}/meta`), { ghostLifetimeMs: lifetime, mode: lifetime ? "GHOST" : conversationMode });
+      const label = DISAPPEARING_OPTIONS.find((o) => o.value === value)?.label ?? "Off";
+      showToast(lifetime ? `Messages will disappear after ${label}` : "Disappearing messages off");
     } catch { setError("Could not update ghost mode."); }
   };
 
   const updateConversationMode = async (mode: ConversationMode) => {
     setConversationMode(mode);
-    try { await update(ref(db, `rooms/${roomId}/meta`), { mode }); }
+    try {
+      await update(ref(db, `rooms/${roomId}/meta`), { mode });
+      showToast(`Conversation mode set to ${mode}`);
+    }
     catch (error) {
       const code = error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code) : "PERMISSION_DENIED";
       setError(`Could not update conversation mode (${code}). Deploy the current Firebase rules if this persists.`);
@@ -787,7 +956,10 @@ function ChatInner() {
   const startGhostSession = async (duration: number) => {
     const expiresAt = Date.now() + duration;
     setSessionExpiresAt(expiresAt);
-    try { await update(ref(db, `rooms/${roomId}/meta`), { mode: "LIVE", sessionExpiresAt: expiresAt }); }
+    try {
+      await update(ref(db, `rooms/${roomId}/meta`), { mode: "LIVE", sessionExpiresAt: expiresAt });
+      showToast("1h live session started");
+    }
     catch { setError("Could not start ghost session."); }
   };
 
@@ -918,6 +1090,8 @@ function ChatInner() {
   // Send message
   async function send(e: FormEvent) {
     e.preventDefault();
+    // Guard against duplicate sends (Enter key + click, or rapid Enter presses)
+    if (sending) return;
     if ((!input.trim() && !mediaFile) || !key || !user) return;
     setSending(true);
     setError("");
@@ -1053,7 +1227,7 @@ function ChatInner() {
       className="chat-page"
       onPointerDown={(event) => {
         if (showOverflowMenu && overflowMenuRef.current && !overflowMenuRef.current.contains(event.target as Node)) {
-          setShowOverflowMenu(false);
+          closeOverflowMenu();
           setShowPrivacySettings(false);
           setShowMomentsPanel(false);
         }
@@ -1093,59 +1267,206 @@ function ChatInner() {
             <button
               type="button"
               onClick={() => setShowOverflowMenu((open) => !open)}
-              className="header-icon-btn"
+              className={`header-icon-btn${showOverflowMenu ? " header-icon-btn-active" : ""}`}
               title="Chat options"
               aria-label="Open chat options"
               aria-expanded={showOverflowMenu}
+              aria-haspopup="menu"
             >
               ⋮
             </button>
             {showOverflowMenu && (
-              <div className="chat-overflow-menu" onPointerDown={(event) => event.stopPropagation()}>
-                <button type="button" onClick={() => setShowPrivacySettings((open) => !open)} className="chat-menu-item">Privacy & disappearing</button>
-                <button type="button" onClick={() => { setShowSearch(true); setShowOverflowMenu(false); }} className="chat-menu-item">Search messages</button>
-                <button type="button" onClick={() => setShowOverflowMenu(false)} className="chat-menu-item">Pinned messages</button>
-                <button type="button" onClick={() => setShowOverflowMenu(false)} className="chat-menu-item">Media</button>
-                <button type="button" onClick={() => setShowMomentsPanel((open) => !open)} className="chat-menu-item">Moments</button>
-                {selectedIds.length > 0 && <button type="button" onClick={() => { void Promise.all(selectedIds.map(deleteForMe)); setSelectedIds([]); setShowOverflowMenu(false); }} className="chat-menu-item">Hide selected ({selectedIds.length})</button>}
-                {unread > 0 && <button type="button" onClick={() => { setUnread(0); setShowOverflowMenu(false); }} className="chat-menu-item">Mark {unread} unread as seen</button>}
-                <button type="button" onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }} className="chat-menu-item chat-menu-item-danger">Lock chat</button>
-                {showPrivacySettings && (
-                  <div className="privacy-settings">
-                    <label>Disappearing messages
-                      <select value={ghostLifetime === null ? "keep" : String(ghostLifetime)} onChange={(event) => void updateGhostLifetime(event.target.value)}>
-                        <option value="keep">Off</option>
-                        <option value="10000">10 seconds</option>
-                        <option value="60000">1 minute</option>
-                        <option value="600000">10 minutes</option>
-                        <option value="3600000">1 hour</option>
-                        <option value="86400000">24 hours</option>
-                      </select>
-                    </label>
-                    <label>Conversation mode
-                      <select value={conversationMode} onChange={(event) => void updateConversationMode(event.target.value as ConversationMode)}>
-                        {(["NORMAL", "GHOST", "BURST", "VAULT", "STEALTH", "LIVE"] as ConversationMode[]).map((mode) => <option key={mode}>{mode}</option>)}
-                      </select>
-                    </label>
-                    <label className="privacy-checkbox"><input type="checkbox" checked={viewOnce} onChange={(event) => setViewOnce(event.target.checked)} /> View once media</label>
-                    <button type="button" onClick={() => void toggleDisappearing()} disabled={disappearingLoading} className="privacy-action">{disappearing ? "Turn off 24h chat" : "Turn on 24h chat"}</button>
-                    <button type="button" onClick={() => void startGhostSession(60 * 60 * 1000)} className="privacy-action">Start 1h live session</button>
-                  </div>
-                )}
-                {showMomentsPanel && (
-                  <div className="privacy-settings moments-panel">
-                    <div className="moments-heading"><strong>Moments</strong><span>expire after 24h</span></div>
-                    <div className="moments-list">{moments.map((moment) => <article key={moment.id}><p>{moment.text}</p><small>{moment.senderId === user?.uid ? "You" : "Room member"}</small></article>)}</div>
-                    <div className="moments-compose"><input value={momentInput} onChange={(event) => setMomentInput(event.target.value)} placeholder="Share a temporary text moment" /><button type="button" onClick={() => void sendMoment()} disabled={!momentInput.trim()}>Post</button></div>
-                  </div>
-                )}
+              <div
+                className="chat-menu-panel"
+                role="menu"
+                aria-label="Chat settings"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <div className="chat-menu-head">
+                  <h2>Chat settings</h2>
+                  <span className="chat-menu-e2ee">
+                    <span aria-hidden="true">🔒</span>
+                    {isV2 ? "E2EE" : "Encrypted"}
+                  </span>
+                </div>
+
+                {/* ── CHAT ── */}
+                <div className="chat-menu-section" role="group" aria-label="Chat">
+                  <p className="chat-menu-section-label">Chat</p>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("search")}>
+                    <span className="chat-menu-icon" aria-hidden="true">🔍</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Search messages</span>
+                      <span className="chat-menu-hint">Find text in this conversation</span>
+                    </span>
+                  </button>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("pinned")}>
+                    <span className="chat-menu-icon" aria-hidden="true">📌</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Pinned messages</span>
+                      <span className="chat-menu-hint">
+                        {pinnedMessages.length > 0 ? `${pinnedMessages.length} pinned` : "Nothing pinned yet"}
+                      </span>
+                    </span>
+                    {pinnedMessages.length > 0 && <span className="chat-menu-tail">{pinnedMessages.length}</span>}
+                  </button>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("media")}>
+                    <span className="chat-menu-icon" aria-hidden="true">🖼️</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Media</span>
+                      <span className="chat-menu-hint">
+                        {mediaItems.length > 0 ? `${mediaItems.length} item${mediaItems.length === 1 ? "" : "s"}` : "No media yet"}
+                      </span>
+                    </span>
+                  </button>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("moments")}>
+                    <span className="chat-menu-icon" aria-hidden="true">✨</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Moments</span>
+                      <span className="chat-menu-hint">Temporary posts, expire after 24h</span>
+                    </span>
+                    {moments.length > 0 && <span className="chat-menu-tail">{moments.length}</span>}
+                  </button>
+
+                  {selectedIds.length > 0 && (
+                    <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => { void Promise.all(selectedIds.map(deleteForMe)); setSelectedIds([]); closeOverflowMenu(); }}>
+                      <span className="chat-menu-icon" aria-hidden="true">🙈</span>
+                      <span className="chat-menu-text">
+                        <span className="chat-menu-label">Hide selected</span>
+                        <span className="chat-menu-hint">Removes {selectedIds.length} message{selectedIds.length === 1 ? "" : "s"} for you only</span>
+                      </span>
+                      <span className="chat-menu-tail">{selectedIds.length}</span>
+                    </button>
+                  )}
+
+                  {unread > 0 && (
+                    <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => { setUnread(0); closeOverflowMenu(); showToast("Marked as seen"); }}>
+                      <span className="chat-menu-icon" aria-hidden="true">✓</span>
+                      <span className="chat-menu-text">
+                        <span className="chat-menu-label">Mark unread as seen</span>
+                        <span className="chat-menu-hint">Clears the unread counter</span>
+                      </span>
+                      <span className="chat-menu-tail">{unread}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* ── PRIVACY ── */}
+                <div className="chat-menu-section" role="group" aria-label="Privacy">
+                  <p className="chat-menu-section-label">Privacy</p>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("privacy")}>
+                    <span className="chat-menu-icon" aria-hidden="true">⏱️</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Disappearing messages</span>
+                      <span className="chat-menu-hint">
+                        {ghostLifetime === null ? "Off" : `New messages expire in ${DISAPPEARING_OPTIONS.find((o) => o.value === String(ghostLifetime))?.label ?? "custom time"}`}
+                      </span>
+                    </span>
+                    <span className="chat-menu-tail" aria-hidden="true">›</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="chat-menu-btn"
+                    aria-pressed={viewOnce}
+                    aria-current={viewOnce}
+                    onClick={() => {
+                      setViewOnce((on) => !on);
+                      showToast(viewOnce ? "View Once off for this session" : "View Once on for this session");
+                    }}
+                  >
+                    <span className="chat-menu-icon" aria-hidden="true">👁️</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">View once media</span>
+                      <span className="chat-menu-hint">
+                        {viewOnce ? "On — new media self-destructs after viewing" : "Applies to media sent in this session"}
+                      </span>
+                    </span>
+                    {viewOnce && <span className="chat-menu-tail">On</span>}
+                  </button>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn chat-menu-btn-danger" onClick={() => { lock(); router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`); }}>
+                    <span className="chat-menu-icon" aria-hidden="true">🔒</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Lock chat</span>
+                      <span className="chat-menu-hint">Clears keys and hides this conversation</span>
+                    </span>
+                  </button>
+                </div>
+
+                {/* ── CONVERSATION ── */}
+                <div className="chat-menu-section" role="group" aria-label="Conversation">
+                  <p className="chat-menu-section-label">Conversation</p>
+
+                  <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => openSheet("privacy")}>
+                    <span className="chat-menu-icon" aria-hidden="true">🎚️</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Conversation mode</span>
+                      <span className="chat-menu-hint">{MODE_HINTS[conversationMode] ?? conversationMode}</span>
+                    </span>
+                    <span className="chat-menu-tail" aria-hidden="true">›</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="chat-menu-btn"
+                    disabled={disappearingLoading}
+                    aria-pressed={disappearing}
+                    onClick={() => {
+                      const next = !disappearing;
+                      if (next && !window.confirm("Turn on 24h chat? Once both participants open the chat, all messages in this room are deleted after 24 hours. This cannot be undone.")) return;
+                      void toggleDisappearing();
+                    }}
+                  >
+                    <span className="chat-menu-icon" aria-hidden="true">🗓️</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">{disappearing ? "24h chat is on" : "Turn on 24h chat"}</span>
+                      <span className="chat-menu-hint">
+                        {disappearing ? "Messages are purged 24h after both participants open" : "Deletes room messages after 24h"}
+                      </span>
+                    </span>
+                    {disappearing && <span className="chat-menu-tail">On</span>}
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="chat-menu-btn"
+                    aria-current={!!sessionExpiresAt && sessionExpiresAt > Date.now()}
+                    onClick={() => {
+                      if (sessionExpiresAt && sessionExpiresAt > Date.now()) {
+                        showToast("A live session is already active");
+                        return;
+                      }
+                      void startGhostSession(60 * 60 * 1000);
+                    }}
+                  >
+                    <span className="chat-menu-icon" aria-hidden="true">📡</span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">
+                        {sessionExpiresAt && sessionExpiresAt > Date.now() ? "Live session active" : "Start 1h live session"}
+                      </span>
+                      <span className="chat-menu-hint">
+                        {sessionExpiresAt && sessionExpiresAt > Date.now()
+                          ? `Chat locks ${timeUntilChat(sessionExpiresAt)}`
+                          : "Sets a 1 hour session and locks the chat at the end"}
+                      </span>
+                    </span>
+                    {sessionExpiresAt && sessionExpiresAt > Date.now() && <span className="chat-menu-tail">Active</span>}
+                  </button>
+                </div>
               </div>
             )}
           </div>
         </div>
       </header>
-
-      {showSearch && <div className="search-bar"><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search this room" aria-label="Search messages" /><button type="button" onClick={() => { setSearch(""); setShowSearch(false); }} aria-label="Close search">×</button></div>}
 
       {/* Message list */}
       <section
@@ -1175,12 +1496,374 @@ function ChatInner() {
               onPin={pinMessage}
               onSelect={selectMessage}
               selected={selectedIds.includes(m.id)}
+              highlighted={highlightedId === m.id}
+              rowRef={(el) => {
+                if (el) messageAnchors.current.set(m.id, el);
+                else messageAnchors.current.delete(m.id);
+              }}
               myUid={user?.uid ?? ""}
             />
           ))}
           <div ref={bottom} />
         </div>
       </section>
+
+      {/* ── Overlay sheets ─────────────────────────────────────────────────── */}
+      {activeSheet && (
+        <>
+          <div
+            className="sheet-backdrop"
+            onPointerDown={() => closeSheet()}
+            aria-hidden="true"
+          />
+          <div
+            className="sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              activeSheet === "search" ? "Search messages"
+                : activeSheet === "pinned" ? "Pinned messages"
+                : activeSheet === "media" ? "Media"
+                : activeSheet === "moments" ? "Moments"
+                : "Privacy and conversation settings"
+            }
+          >
+            {/* SEARCH */}
+            {activeSheet === "search" && (
+              <>
+                <div className="sheet-head">
+                  <h2 className="sheet-title">
+                    Search messages
+                    <span className="sheet-sub">
+                      {search.trim() === ""
+                        ? "Type to search decrypted messages on this device"
+                        : `${searchResults.length} match${searchResults.length === 1 ? "" : "es"}`}
+                    </span>
+                  </h2>
+                  <button type="button" className="sheet-close" onClick={closeSheet} aria-label="Close search">×</button>
+                </div>
+                <div className="sheet-body">
+                  <div className="search-bar" style={{ padding: 0, background: "transparent", border: 0 }}>
+                    <span aria-hidden="true" style={{ color: "#64748b" }}>🔍</span>
+                    <input
+                      autoFocus
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Search this room"
+                      aria-label="Search messages in this conversation"
+                    />
+                    {search && (
+                      <button type="button" onClick={() => setSearch("")} aria-label="Clear search">×</button>
+                    )}
+                  </div>
+
+                  {search.trim() === "" ? (
+                    <div className="sheet-empty">
+                      <strong>Search stays on this device</strong>
+                      <span>Messages are decrypted locally, so search never sends your plaintext anywhere.</span>
+                    </div>
+                  ) : searchResults.length === 0 ? (
+                    <div className="sheet-empty">
+                      <strong>No messages found</strong>
+                      <span>Nothing in this conversation matches “{search.trim()}”.</span>
+                    </div>
+                  ) : (
+                    <div className="sheet-list">
+                      {searchResults.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          className="sheet-hit"
+                          onClick={() => jumpToMessage(m.id)}
+                        >
+                          <span className="sheet-hit-text">{m.plaintext}</span>
+                          <span className="sheet-hit-meta">
+                            <span>{m.senderId === user?.uid ? "You" : (friendProfile?.displayName ?? "Them")}</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{new Date(m.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* PINNED */}
+            {activeSheet === "pinned" && (
+              <>
+                <div className="sheet-head">
+                  <h2 className="sheet-title">
+                    Pinned messages
+                    <span className="sheet-sub">{pinnedMessages.length} pinned</span>
+                  </h2>
+                  <button type="button" className="sheet-close" onClick={closeSheet} aria-label="Close pinned messages">×</button>
+                </div>
+                <div className="sheet-body">
+                  {pinnedMessages.length === 0 ? (
+                    <div className="sheet-empty">
+                      <strong>No pinned messages yet</strong>
+                      <span>Open a message’s ⋯ menu and choose “Pin message”.</span>
+                    </div>
+                  ) : (
+                    <div className="sheet-list">
+                      {pinnedMessages.map((m) => (
+                        <div key={m.id} style={{ display: "grid", gap: "0.3rem" }}>
+                          <button type="button" className="sheet-hit" onClick={() => jumpToMessage(m.id)}>
+                            <span className="sheet-hit-text">{m.plaintext}</span>
+                            <span className="sheet-hit-meta">
+                              <span>{m.senderId === user?.uid ? "You" : (friendProfile?.displayName ?? "Them")}</span>
+                              <span aria-hidden="true">·</span>
+                              <span>{new Date(m.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="chat-menu-btn"
+                            style={{ minHeight: "36px" }}
+                            onClick={() => { void pinMessage(m.id, false); showToast("Message unpinned"); }}
+                          >
+                            <span className="chat-menu-icon" aria-hidden="true">📌</span>
+                            <span className="chat-menu-text"><span className="chat-menu-label">Unpin</span></span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* MEDIA */}
+            {activeSheet === "media" && (
+              <>
+                <div className="sheet-head">
+                  <h2 className="sheet-title">
+                    Media
+                    <span className="sheet-sub">{mediaItems.length} item{mediaItems.length === 1 ? "" : "s"} in this chat</span>
+                  </h2>
+                  <button type="button" className="sheet-close" onClick={closeSheet} aria-label="Close media">×</button>
+                </div>
+                <div className="sheet-body">
+                  {mediaItems.length === 0 ? (
+                    <div className="sheet-empty">
+                      <strong>No media yet</strong>
+                      <span>Images and videos you receive in this chat will appear here.</span>
+                    </div>
+                  ) : (
+                    <>
+                      {mediaImages.length > 0 && (
+                        <>
+                          <p className="sheet-section-label">Images ({mediaImages.length})</p>
+                          <div className="media-grid">
+                            {mediaImages.map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                className="media-tile"
+                                onClick={() => openMediaViewer(m)}
+                                aria-label={`View image from ${m.senderId === user?.uid ? "you" : "this chat"}`}
+                              >
+                                <img src={m.mediaBlobUrl ?? ""} alt="" loading="lazy" />
+                                {m.viewOnce && <span className="media-tile-badge">View once</span>}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {mediaVideos.length > 0 && (
+                        <>
+                          <p className="sheet-section-label">Videos ({mediaVideos.length})</p>
+                          <div className="media-grid">
+                            {mediaVideos.map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                className="media-tile"
+                                onClick={() => openMediaViewer(m)}
+                                aria-label={`Play video from ${m.senderId === user?.uid ? "you" : "this chat"}`}
+                              >
+                                <video src={m.mediaBlobUrl ?? ""} muted preload="metadata" />
+                                {m.viewOnce && <span className="media-tile-badge">View once</span>}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* MOMENTS */}
+            {activeSheet === "moments" && (
+              <>
+                <div className="sheet-head">
+                  <h2 className="sheet-title">
+                    Moments
+                    <span className="sheet-sub">Temporary posts · expire after 24h</span>
+                  </h2>
+                  <button type="button" className="sheet-close" onClick={closeSheet} aria-label="Close moments">×</button>
+                </div>
+                <div className="sheet-body">
+                  {moments.length === 0 ? (
+                    <div className="sheet-empty">
+                      <strong>No moments yet</strong>
+                      <span>Post a short-lived note below. Moments disappear after 24 hours.</span>
+                    </div>
+                  ) : (
+                    <div className="sheet-list">
+                      {moments.map((moment) => (
+                        <div key={moment.id} className="sheet-hit" style={{ cursor: "default" }}>
+                          <span className="sheet-hit-text">{moment.text}</span>
+                          <span className="sheet-hit-meta">
+                            <span>{moment.senderId === user?.uid ? "You" : (friendProfile?.displayName ?? "Room member")}</span>
+                            <span aria-hidden="true">·</span>
+                            <span>expires {timeUntilChat(moment.expiresAt)}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="moments-compose" style={{ marginTop: "0.75rem" }}>
+                    <input
+                      value={momentInput}
+                      onChange={(event) => setMomentInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && momentInput.trim()) {
+                          event.preventDefault();
+                          void sendMoment();
+                        }
+                      }}
+                      placeholder="Share a temporary text moment"
+                      aria-label="Write a moment"
+                    />
+                    <button type="button" onClick={() => void sendMoment()} disabled={!momentInput.trim()}>Post</button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* PRIVACY / CONVERSATION SETTINGS */}
+            {activeSheet === "privacy" && (
+              <>
+                <div className="sheet-head">
+                  <h2 className="sheet-title">
+                    Privacy &amp; conversation
+                    <span className="sheet-sub">Saved to room settings</span>
+                  </h2>
+                  <button type="button" className="sheet-close" onClick={closeSheet} aria-label="Close settings">×</button>
+                </div>
+                <div className="sheet-body">
+                  <div className="privacy-settings" style={{ margin: 0, padding: 0, borderTop: 0 }}>
+                    <label htmlFor="disappear-select">
+                      Disappearing messages
+                      <select
+                        id="disappear-select"
+                        value={ghostLifetime === null ? "keep" : String(ghostLifetime)}
+                        onChange={(event) => void updateGhostLifetime(event.target.value)}
+                      >
+                        {DISAPPEARING_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <p className="chat-menu-hint" style={{ marginTop: "-0.35rem" }}>
+                      Applies to messages you send. Only the durations listed above are supported.
+                    </p>
+
+                    <label htmlFor="mode-select">
+                      Conversation mode
+                      <select
+                        id="mode-select"
+                        value={conversationMode}
+                        onChange={(event) => void updateConversationMode(event.target.value as ConversationMode)}
+                      >
+                        {(["NORMAL", "GHOST", "BURST", "VAULT", "STEALTH", "LIVE"] as ConversationMode[]).map((mode) => (
+                          <option key={mode} value={mode}>{mode} — {MODE_HINTS[mode]}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="privacy-checkbox" htmlFor="view-once-toggle">
+                      <input
+                        id="view-once-toggle"
+                        type="checkbox"
+                        checked={viewOnce}
+                        onChange={(event) => {
+                          setViewOnce(event.target.checked);
+                          showToast(event.target.checked ? "View Once on for this session" : "View Once off");
+                        }}
+                      />
+                      View once media
+                    </label>
+                    <p className="chat-menu-hint" style={{ marginTop: "-0.35rem" }}>
+                      Applies to media sent in this session. View-once media is consumed on first view.
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !disappearing;
+                        if (next && !window.confirm("Turn on 24h chat? Once both participants open the chat, all messages in this room are deleted after 24 hours. This cannot be undone.")) return;
+                        void toggleDisappearing();
+                      }}
+                      disabled={disappearingLoading}
+                      className="privacy-action"
+                    >
+                      {disappearing ? "Turn off 24h chat" : "Turn on 24h chat"}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (sessionExpiresAt && sessionExpiresAt > Date.now()) {
+                          showToast("A live session is already active");
+                          return;
+                        }
+                        void startGhostSession(60 * 60 * 1000);
+                      }}
+                      disabled={!!sessionExpiresAt && sessionExpiresAt > Date.now()}
+                      className="privacy-action"
+                      title={sessionExpiresAt && sessionExpiresAt > Date.now() ? "A live session is already running" : undefined}
+                    >
+                      {sessionExpiresAt && sessionExpiresAt > Date.now() ? "Live session active" : "Start 1h live session"}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Media lightbox ── */}
+      {lightbox && (
+        <div
+          className="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Media viewer"
+          onPointerDown={() => setLightbox(null)}
+        >
+          {lightbox.kind === "video" ? (
+            <video src={lightbox.url} controls autoPlay playsInline onPointerDown={(e) => e.stopPropagation()} />
+          ) : (
+            <img src={lightbox.url} alt="Shared media" onPointerDown={(e) => e.stopPropagation()} />
+          )}
+          <div className="lightbox-bar" onPointerDown={(e) => e.stopPropagation()}>
+            {lightbox.viewOnce && <span>🔒 View once — already consumed</span>}
+            <button type="button" className="sheet-close" onClick={() => setLightbox(null)} aria-label="Close media viewer">×</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Toast ── */}
+      {toastMsg && (
+        <div className="chat-toast" role="status" aria-live="polite">{toastMsg}</div>
+      )}
 
       {/* Media preview strip */}
       {mediaPreview && mediaFile && (
@@ -1248,22 +1931,42 @@ function ChatInner() {
               value={input}
               onChange={(e) => { setInput(e.target.value); setTyping(true); }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(e as unknown as FormEvent); }
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  void send(e as unknown as FormEvent);
+                }
               }}
               rows={1}
               placeholder={mediaFile ? "Add a caption… (optional)" : "Write a message…"}
               className="composer-input"
+              aria-label="Message"
               style={{ userSelect: "text" } as React.CSSProperties}
             />
 
             {/* One display-mode control shared by desktop and mobile */}
             <div className="mode-switch mode-switch-display" role="group" aria-label="Display mode">
-              <button type="button" onClick={() => setRevealed(false)} className={!revealed ? "mode-active" : "mode-option"}>Coded</button>
-              <button type="button" onClick={() => setRevealed(true)} className={revealed ? "mode-active" : "mode-option"}>Revealed</button>
+              <button
+                type="button"
+                onClick={() => setRevealed(false)}
+                className={!revealed ? "mode-active" : "mode-option"}
+                aria-pressed={!revealed}
+              >Coded</button>
+              <button
+                type="button"
+                onClick={() => setRevealed(true)}
+                className={revealed ? "mode-active" : "mode-option"}
+                aria-pressed={revealed}
+              >Revealed</button>
             </div>
 
             {/* Send */}
-            <button disabled={sending || (!input.trim() && !mediaFile)} className="btn-send">
+            <button
+              type="button"
+              disabled={sending || (!input.trim() && !mediaFile)}
+              className="btn-send"
+              aria-label={sending ? "Sending message" : "Send message"}
+              aria-busy={sending}
+            >
               {sending ? "…" : "Send"}
             </button>
           </div>
