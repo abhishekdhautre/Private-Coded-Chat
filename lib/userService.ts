@@ -4,10 +4,11 @@ import {
 import { db } from "@/lib/firebase";
 import { encrypt } from "@/lib/crypto";
 import {
-  acceptFriendRequest as acceptFriendRequestCallable,
-  cancelFriendRequest as cancelFriendRequestCallable,
+  acceptFriendRequest as acceptFriendRequestImpl,
+  cancelFriendRequest as cancelFriendRequestImpl,
   createFriendRequest,
-  declineFriendRequest as declineFriendRequestCallable,
+  declineFriendRequest as declineFriendRequestImpl,
+  friendshipId,
 } from "@/lib/friendRequestService";
 import type { UserProfile, FriendRequest } from "@/types/user";
 
@@ -81,11 +82,10 @@ export function setOffline(uid: string): void {
 
 // ── Friend Requests ───────────────────────────────────────────────────────────
 
-export async function sendFriendRequest(fromUid: string, toUid: string): Promise<void> {
+export async function sendFriendRequest(fromUid: string, toUid: string): Promise<string> {
   try {
-    // Sender identity comes from callable-function auth, not this legacy UI argument.
     void fromUid;
-    await createFriendRequest(toUid);
+    return await createFriendRequest(toUid);
   } catch (error) {
     console.error("[FriendRequest] failed:", error);
     throw error;
@@ -96,33 +96,30 @@ export async function getExistingRequest(
   fromUid: string,
   toUid: string
 ): Promise<FriendRequest | null> {
-  const snap = await get(ref(db, `friendRequestIndex/${fromUid}`));
+  const pairKey = friendshipId(fromUid, toUid);
+  const snap = await get(ref(db, `friendRequests/${pairKey}`));
   if (!snap.exists()) return null;
-  const entries = snap.val() as Record<string, {
-    direction: "incoming" | "outgoing";
-    otherUid: string;
-    status: FriendRequest["status"];
-    createdAt: number;
-  }>;
-  for (const [id, entry] of Object.entries(entries)) {
-    if (entry.otherUid !== toUid || entry.status !== "pending") continue;
-    return entry.direction === "outgoing"
-      ? { id, fromUid, toUid, status: entry.status, createdAt: entry.createdAt }
-      : { id, fromUid: toUid, toUid: fromUid, status: entry.status, createdAt: entry.createdAt };
-  }
-  return null;
+  const req = snap.val() as { fromUid: string; toUid: string; status: FriendRequest["status"]; createdAt: number };
+  if (req.status !== "pending") return null;
+  return {
+    id: pairKey,
+    fromUid: req.fromUid,
+    toUid: req.toUid,
+    status: req.status,
+    createdAt: req.createdAt,
+  };
 }
 
-export async function acceptFriendRequest(requestId: string, _fromUid: string, _toUid: string): Promise<void> {
-  await acceptFriendRequestCallable(requestId);
+export async function acceptFriendRequest(requestId: string, _fromUid?: string, _toUid?: string): Promise<void> {
+  await acceptFriendRequestImpl(requestId);
 }
 
 export async function declineFriendRequest(requestId: string): Promise<void> {
-  await declineFriendRequestCallable(requestId);
+  await declineFriendRequestImpl(requestId);
 }
 
 export async function cancelFriendRequest(requestId: string): Promise<void> {
-  await cancelFriendRequestCallable(requestId);
+  await cancelFriendRequestImpl(requestId);
 }
 
 export async function removeFriend(myUid: string, theirUid: string): Promise<void> {
@@ -187,10 +184,6 @@ export function subscribeOutgoingRequests(
 // Always the same for two users regardless of who initiates.
 
 export function privateRoomId(uidA: string, uidB: string): string {
-  return [uidA, uidB].sort().join("__");
-}
-
-export function friendshipId(uidA: string, uidB: string): string {
   return [uidA, uidB].sort().join("__");
 }
 

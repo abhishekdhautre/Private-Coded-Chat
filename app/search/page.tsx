@@ -6,7 +6,7 @@ import { BottomNav } from "@/components/BottomNav";
 import { PresenceGuard } from "@/components/PresenceGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import {
-  getUidByUsername, getProfile, isFriend,
+  getUidByUsername, getProfile, isFriend, getExistingRequest,
   sendFriendRequest, cancelFriendRequest,
 } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
@@ -48,6 +48,13 @@ function SearchInner() {
       const friend = await isFriend(user.uid, uid);
       if (friend) { setResult({ profile, relation: "friend" }); return; }
 
+      const existingReq = await getExistingRequest(user.uid, uid);
+      if (existingReq) {
+        const relation = existingReq.fromUid === user.uid ? "request-sent" : "request-received";
+        setResult({ profile, relation, requestId: existingReq.id });
+        return;
+      }
+
       setResult({ profile, relation: "none" });
     } catch (error) {
       console.error("[Search] failed:", error);
@@ -60,21 +67,33 @@ function SearchInner() {
   async function handleAdd() {
     if (!user || !result) return;
     setActionBusy(true);
+    setError("");
     try {
-      await sendFriendRequest(user.uid, result.profile.uid);
-      setResult({ ...result, relation: "request-sent" });
-    } catch { setError("Could not send request."); }
-    finally { setActionBusy(false); }
+      const reqId = await sendFriendRequest(user.uid, result.profile.uid);
+      setResult({ ...result, relation: "request-sent", requestId: reqId });
+    } catch (err: unknown) {
+      console.error("[handleAdd] failed:", err);
+      const msg = err instanceof Error ? err.message : "Could not send request.";
+      setError(msg);
+    } finally {
+      setActionBusy(false);
+    }
   }
 
   async function handleCancel() {
     if (!result?.requestId) return;
     setActionBusy(true);
+    setError("");
     try {
       await cancelFriendRequest(result.requestId);
       setResult({ ...result, relation: "none", requestId: undefined });
-    } catch { setError("Could not cancel request."); }
-    finally { setActionBusy(false); }
+    } catch (err: unknown) {
+      console.error("[handleCancel] failed:", err);
+      const msg = err instanceof Error ? err.message : "Could not cancel request.";
+      setError(msg);
+    } finally {
+      setActionBusy(false);
+    }
   }
 
   const p = result?.profile;

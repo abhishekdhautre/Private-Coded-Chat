@@ -26,7 +26,7 @@
       "$friendshipId": {
         ".read": "auth != null && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid)",
         ".write": "auth != null && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid || (!data.exists() && (newData.child('participants').child('0').val() == auth.uid || newData.child('participants').child('1').val() == auth.uid)))",
-        ".validate": "newData.hasChildren(['participants','since']) && newData.child('participants').hasChildren(['0','1']) && newData.child('since').isNumber()"
+        ".validate": "!newData.exists() || (newData.hasChildren(['participants','since']) && newData.child('participants').hasChildren(['0','1']) && newData.child('since').isNumber())"
       }
     },
     "userChats": {
@@ -42,8 +42,8 @@
       "$uid": {
         ".read": "auth != null && auth.uid == $uid",
         "$notifId": {
-          ".write": "auth != null",
-          ".validate": "newData.hasChildren(['type','fromUid','read','createdAt']) && newData.child('type').isString() && newData.child('fromUid').isString() && newData.child('read').isBoolean() && newData.child('createdAt').isNumber()"
+          ".write": "auth != null && (auth.uid == $uid || (!data.exists() && (newData.child('type').val() == 'friend_request' || newData.child('type').val() == 'friend_accepted') && newData.child('fromUid').val() == auth.uid))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['type','fromUid','read','createdAt']) && newData.child('type').isString() && newData.child('fromUid').isString() && newData.child('read').isBoolean() && newData.child('createdAt').isNumber())"
         }
       }
     },
@@ -56,13 +56,17 @@
     "friendRequests": {
       "$requestId": {
         ".read": "auth != null && (data.child('fromUid').val() == auth.uid || data.child('toUid').val() == auth.uid)",
-        ".write": "false"
+        ".write": "auth != null && (((!data.exists() || data.child('status').val() == 'declined' || data.child('status').val() == 'cancelled') && newData.exists() && newData.child('fromUid').val() == auth.uid && newData.child('toUid').val() != auth.uid && newData.child('status').val() == 'pending' && newData.child('createdAt').isNumber() && root.child('users').hasChild(newData.child('toUid').val()) && !root.child('friends').child(auth.uid).hasChild(newData.child('toUid').val())) || (data.exists() && data.child('status').val() == 'pending' && data.child('toUid').val() == auth.uid && newData.child('status').val() == 'accepted' && newData.child('fromUid').val() == data.child('fromUid').val() && newData.child('toUid').val() == data.child('toUid').val()) || (data.exists() && data.child('status').val() == 'pending' && data.child('toUid').val() == auth.uid && newData.child('status').val() == 'declined' && newData.child('fromUid').val() == data.child('fromUid').val() && newData.child('toUid').val() == data.child('toUid').val()) || (data.exists() && data.child('status').val() == 'pending' && data.child('fromUid').val() == auth.uid && newData.child('status').val() == 'cancelled' && newData.child('fromUid').val() == data.child('fromUid').val() && newData.child('toUid').val() == data.child('toUid').val()))",
+        ".validate": "newData.hasChildren(['fromUid', 'toUid', 'status', 'createdAt']) && newData.child('fromUid').isString() && newData.child('toUid').isString() && newData.child('createdAt').isNumber() && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'accepted' || newData.child('status').val() == 'declined' || newData.child('status').val() == 'cancelled') && $requestId == (newData.child('fromUid').val() < newData.child('toUid').val() ? newData.child('fromUid').val() + '__' + newData.child('toUid').val() : newData.child('toUid').val() + '__' + newData.child('fromUid').val())"
       }
     },
     "friendRequestIndex": {
       "$uid": {
         ".read": "auth != null && auth.uid == $uid",
-        ".write": "false"
+        "$requestId": {
+          ".write": "auth != null && ((auth.uid == $uid && ((!data.exists() && newData.child('direction').val() == 'outgoing' && newData.child('otherUid').val() != auth.uid && newData.child('status').val() == 'pending') || (data.exists() && (newData.child('status').val() == 'accepted' || newData.child('status').val() == 'declined' || newData.child('status').val() == 'cancelled')))) || (auth.uid != $uid && $requestId == (auth.uid < $uid ? auth.uid + '__' + $uid : $uid + '__' + auth.uid) && ((!data.exists() && newData.exists() && newData.child('direction').val() == 'incoming' && newData.child('otherUid').val() == auth.uid && newData.child('status').val() == 'pending') || (data.exists() && newData.exists() && data.child('otherUid').val() == auth.uid && (newData.child('status').val() == 'accepted' || newData.child('status').val() == 'declined' || newData.child('status').val() == 'cancelled')))))",
+          ".validate": "newData.hasChildren(['direction', 'otherUid', 'status', 'createdAt']) && (newData.child('direction').val() == 'incoming' || newData.child('direction').val() == 'outgoing') && newData.child('otherUid').isString() && newData.child('createdAt').isNumber() && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'accepted' || newData.child('status').val() == 'declined' || newData.child('status').val() == 'cancelled')"
+        }
       }
     },
     "friendRequestPairIndex": {
