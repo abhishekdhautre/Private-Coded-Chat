@@ -10,6 +10,8 @@ import {
   declineFriendRequest as declineFriendRequestImpl,
   friendshipId,
 } from "@/lib/friendRequestService";
+import { createV2Room, TargetDeviceKeyInfo } from "@/lib/roomKeyService";
+import { getOrCreateDeviceIdentity, getUserDevices, registerDevice } from "@/lib/deviceService";
 import type { UserProfile, FriendRequest } from "@/types/user";
 
 // ── Username ─────────────────────────────────────────────────────────────────
@@ -141,7 +143,6 @@ export async function isFriend(myUid: string, theirUid: string): Promise<boolean
 export function subscribeFriends(uid: string, cb: (uids: string[]) => void): () => void {
   const r = ref(db, `friends/${uid}`);
   const handler = (snap: { exists(): boolean; val(): unknown }) => {
-    console.log(`[subscribeFriends] for ${uid}: exists=${snap.exists()}`, snap.val());
     cb(snap.exists() ? Object.keys(snap.val() as Record<string, unknown>) : []);
   };
   onValue(r, handler as Parameters<typeof onValue>[1]);
@@ -198,35 +199,76 @@ export function privateRoomId(uidA: string, uidB: string): string {
 export async function ensurePrivateRoom(
   myUid: string,
   theirUid: string,
-  key: CryptoKey
+  _legacyKey?: CryptoKey
 ): Promise<string> {
   const roomId = privateRoomId(myUid, theirUid);
   const metaSnap = await get(ref(db, `rooms/${roomId}/meta`));
   if (!metaSnap.exists()) {
-    const keyCheck = await encrypt("keycheck", key);
     const [p0, p1] = [myUid, theirUid].sort();
-    await set(ref(db, `rooms/${roomId}/meta`), {
-      participants: { 0: p0, 1: p1 },
-      keyCheck,
+    const now = Date.now();
+
+    // 1. Get or register device identity for current user
+    const { record } = await getOrCreateDeviceIdentity();
+    await registerDevice(myUid).catch(() => {});
+
+    // 2. Fetch registered target devices for both participants
+    const myDevices = await getUserDevices(myUid).catch(() => []);
+    const theirDevices = await getUserDevices(theirUid).catch(() => []);
+
+    const targetDevices: TargetDeviceKeyInfo[] = [];
+
+    let hasMyCurrentDevice = false;
+    for (const dev of myDevices) {
+      if (dev.payload.deviceId === record.deviceId) hasMyCurrentDevice = true;
+      targetDevices.push({
+        uid: myUid,
+        deviceId: dev.payload.deviceId,
+        exchangePublicKey: dev.payload.exchangePublicKey,
+      });
+    }
+    if (!hasMyCurrentDevice) {
+      targetDevices.push({
+        uid: myUid,
+        deviceId: record.deviceId,
+        exchangePublicKey: record.exchangePublicKey,
+      });
+    }
+
+    for (const dev of theirDevices) {
+      targetDevices.push({
+        uid: theirUid,
+        deviceId: dev.payload.deviceId,
+        exchangePublicKey: dev.payload.exchangePublicKey,
+      });
+    }
+
+    // 3. Create V2 E2EE room with version = "v2_e2ee", currentEpoch = 1, and envelopes
+    await createV2Room({
+      roomId,
+      participants: [p0, p1],
+      targetDevices,
+      senderInfo: {
+        uid: myUid,
+        deviceId: record.deviceId,
+        identityPrivateKey: record.identityPrivateKey,
+        exchangePrivateKey: record.exchangePrivateKey,
+      },
     });
-    // Bootstrap chatMeta so the chat list can find this conversation
+
+    // 4. Bootstrap chatMeta
     await set(ref(db, `chatMeta/${roomId}`), {
       roomId,
       participants: { 0: p0, 1: p1 },
       lastMessage: "🔐 New private message",
-      lastMessageAt: Date.now(),
+      lastMessageAt: now,
     });
-    // Bootstrap userChats index for both participants
-    const now = Date.now();
-    await update(ref(db), {
-      [`userChats/${myUid}/${roomId}/roomId`]: roomId,
-      [`userChats/${myUid}/${roomId}/otherUid`]: theirUid,
-      [`userChats/${myUid}/${roomId}/lastMessageAt`]: now,
-      [`userChats/${myUid}/${roomId}/unread`]: 0,
-      [`userChats/${theirUid}/${roomId}/roomId`]: roomId,
-      [`userChats/${theirUid}/${roomId}/otherUid`]: myUid,
-      [`userChats/${theirUid}/${roomId}/lastMessageAt`]: now,
-      [`userChats/${theirUid}/${roomId}/unread`]: 0,
+
+    // 5. Bootstrap userChats index for current user only
+    await update(ref(db, `userChats/${myUid}/${roomId}`), {
+      roomId,
+      otherUid: theirUid,
+      lastMessageAt: now,
+      unread: 0,
     });
   }
   return roomId;
@@ -257,30 +299,12 @@ export async function touchChatMeta(
     participants: { 0: p0, 1: p1 },
   });
 
-  // Update per-user chat index for both participants
-  await update(ref(db), {
-    [`userChats/${senderUid}/${roomId}/roomId`]: roomId,
-    [`userChats/${senderUid}/${roomId}/otherUid`]: otherUid,
-    [`userChats/${senderUid}/${roomId}/lastMessageAt`]: now,
-    [`userChats/${otherUid}/${roomId}/roomId`]: roomId,
-    [`userChats/${otherUid}/${roomId}/otherUid`]: senderUid,
-    [`userChats/${otherUid}/${roomId}/lastMessageAt`]: now,
-  });
-
-  // Increment unread count for the recipient only
-  await runTransaction(ref(db, `userChats/${otherUid}/${roomId}/unread`), (value) =>
-    typeof value === "number" ? value + 1 : 1
-  );
-
-  // Push in-app notification to recipient
-  const notifRef = push(ref(db, `notifications/${otherUid}`));
-  await set(notifRef, {
-    type: "message",
-    fromUid: senderUid,
+  // Update per-user chat index for sender only (rules allow writing only own userChats)
+  await update(ref(db, `userChats/${senderUid}/${roomId}`), {
     roomId,
-    read: false,
-    createdAt: now,
-  }).catch(() => {});
+    otherUid,
+    lastMessageAt: now,
+  });
 }
 
 /** Mark all messages as read for this user — resets their unread count to 0. */
@@ -288,7 +312,7 @@ export async function markChatRead(roomId: string, uid: string): Promise<void> {
   // Reset per-user index unread counter
   await update(ref(db, `userChats/${uid}/${roomId}`), { unread: 0 });
   // Also reset shared unreadCounts for legacy compatibility
-  await update(ref(db, `chatMeta/${roomId}/unreadCounts`), { [uid]: 0 }).catch(() => {});
+  await update(ref(db, `chatMeta/${roomId}/unreadCounts`), { [uid]: 0 });
 }
 
 // ── Chat list subscription (per-user index) ────────────────────────────────

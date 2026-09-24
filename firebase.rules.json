@@ -4,7 +4,15 @@
       "$uid": {
         ".read": "auth != null",
         ".write": "auth != null && auth.uid == $uid",
-        ".validate": "newData.hasChildren(['uid','username','displayName','photoURL','createdAt']) && newData.child('uid').val() == $uid && newData.child('username').isString() && newData.child('displayName').isString() && newData.child('displayName').val().length >= 1 && newData.child('displayName').val().length <= 40 && newData.child('photoURL').isString() && newData.child('createdAt').isNumber()"
+        ".validate": "newData.hasChildren(['uid','username','displayName','photoURL','createdAt']) && newData.child('uid').val() == $uid && newData.child('username').isString() && newData.child('displayName').isString() && newData.child('displayName').val().length >= 1 && newData.child('displayName').val().length <= 40 && newData.child('photoURL').isString() && newData.child('createdAt').isNumber()",
+        "devices": {
+          ".read": "auth != null",
+          "$deviceId": {
+            ".read": "auth != null",
+            ".write": "auth != null && auth.uid == $uid",
+            ".validate": "newData.hasChildren(['deviceId', 'createdAt', 'publicKeys', 'signature']) && newData.child('deviceId').val() == $deviceId && newData.child('createdAt').isNumber() && newData.child('signature').isString() && newData.child('publicKeys').hasChildren(['identityECDSA', 'exchangeECDH']) && !newData.hasChild('privateKey') && !newData.hasChild('identityPrivateKey') && !newData.hasChild('exchangePrivateKey') && !newData.hasChild('privateKeys')"
+          }
+        }
       }
     },
     "usernames": {
@@ -91,7 +99,7 @@
         "meta": {
           ".read": "auth != null && (!data.exists() || data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid)",
           ".write": "auth != null && ((!data.exists() && newData.exists() && (newData.child('participants').child('0').val() == auth.uid || newData.child('participants').child('1').val() == auth.uid)) || (data.exists() && (data.child('participants').child('0').val() == auth.uid || data.child('participants').child('1').val() == auth.uid)))",
-          ".validate": "newData.hasChildren(['participants','keyCheck']) && newData.child('participants').hasChildren(['0','1']) && !newData.child('participants').child('2').exists() && newData.child('participants').child('0').isString() && newData.child('participants').child('1').isString() && newData.child('participants').child('0').val() != newData.child('participants').child('1').val() && newData.child('keyCheck').hasChildren(['ciphertext','iv']) && newData.child('keyCheck').child('ciphertext').isString() && newData.child('keyCheck').child('iv').isString()",
+          ".validate": "(newData.hasChildren(['participants','keyCheck']) && newData.child('participants').hasChildren(['0','1']) && !newData.child('participants').child('2').exists() && newData.child('participants').child('0').isString() && newData.child('participants').child('1').isString() && newData.child('participants').child('0').val() != newData.child('participants').child('1').val() && newData.child('keyCheck').hasChildren(['ciphertext','iv']) && newData.child('keyCheck').child('ciphertext').isString() && newData.child('keyCheck').child('iv').isString()) || (newData.hasChildren(['participants','version']) && newData.child('version').val() == 'v2_e2ee' && newData.child('participants').hasChildren(['0','1']) && newData.child('participants').child('0').isString() && newData.child('participants').child('1').isString())",
           "participants": {
             "$participantId": {
               ".validate": "$participantId == '0' || $participantId == '1'"
@@ -102,12 +110,23 @@
             ".validate": "newData.isString() && (newData.val() == 'NORMAL' || newData.val() == 'GHOST' || newData.val() == 'BURST' || newData.val() == 'VAULT' || newData.val() == 'STEALTH' || newData.val() == 'LIVE')"
           }
         },
+        "keyEnvelopes": {
+          "$epochOrDeviceId": {
+            ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+            ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid) && (!data.exists() || data.child('senderUid').val() == auth.uid)",
+            "$deviceId": {
+              ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
+              ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid) && (!data.exists() || data.child('senderUid').val() == auth.uid)",
+              ".validate": "newData.hasChildren(['roomId','epoch','deviceId','ownerUid','encryptedRoomKey','iv','senderDeviceId','senderUid','signature','createdAt']) && newData.child('roomId').val() == $roomId && newData.child('deviceId').val() == $deviceId && (newData.child('ownerUid').val() == root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() || newData.child('ownerUid').val() == root.child('rooms').child($roomId).child('meta').child('participants').child('1').val()) && newData.child('encryptedRoomKey').isString() && newData.child('iv').isString() && newData.child('senderDeviceId').isString() && newData.child('senderUid').val() == auth.uid && newData.child('signature').isString() && newData.child('createdAt').isNumber() && !newData.hasChild('rawKey') && !newData.hasChild('roomMasterKey') && !newData.hasChild('privateKey')"
+            }
+          }
+        },
         "messages": {
           ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
           "$messageId": {
             ".read": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",
-            ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid) && ((!data.exists() && newData.exists() && newData.child('senderId').val() == auth.uid) || (data.exists() && !newData.exists()) || (data.exists() && newData.exists()))",
-            ".validate": "newData.hasChildren(['ciphertext','iv','senderId','timestamp']) && newData.child('ciphertext').isString() && newData.child('iv').isString() && newData.child('senderId').isString() && newData.child('timestamp').isNumber() && (!newData.hasChild('expiresAt') || newData.child('expiresAt').isNumber()) && (!newData.hasChild('mediaType') || (newData.child('mediaType').isString() && (newData.child('mediaType').val() == 'image' || newData.child('mediaType').val() == 'video'))) && (!newData.hasChild('mediaData') == !newData.hasChild('mediaIv')) && (!newData.hasChild('mediaData') || newData.child('mediaData').isString()) && (!newData.hasChild('mediaIv') || newData.child('mediaIv').isString())",
+            ".write": "auth != null && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid) && ((!data.exists() && newData.exists() && (newData.child('senderId').val() == auth.uid || newData.child('senderUid').val() == auth.uid)) || (data.exists() && !newData.exists()) || (data.exists() && newData.exists()))",
+            ".validate": "(newData.hasChildren(['ciphertext','iv','senderId','timestamp']) && newData.child('ciphertext').isString() && newData.child('iv').isString() && newData.child('senderId').isString() && newData.child('timestamp').isNumber() && (!newData.hasChild('expiresAt') || newData.child('expiresAt').isNumber()) && (!newData.hasChild('mediaType') || (newData.child('mediaType').isString() && (newData.child('mediaType').val() == 'image' || newData.child('mediaType').val() == 'video'))) && (!newData.hasChild('mediaData') == !newData.hasChild('mediaIv')) && (!newData.hasChild('mediaData') || newData.child('mediaData').isString()) && (!newData.hasChild('mediaIv') || newData.child('mediaIv').isString())) || (newData.hasChildren(['messageId','roomId','epoch','senderUid','senderDeviceId','ciphertext','iv','timestamp','signature']) && newData.child('messageId').val() == $messageId && newData.child('roomId').val() == $roomId && newData.child('epoch').isNumber() && newData.child('senderUid').val() == auth.uid && newData.child('senderDeviceId').isString() && newData.child('ciphertext').isString() && newData.child('iv').isString() && newData.child('timestamp').isNumber() && newData.child('signature').isString() && (!newData.hasChild('cryptoVersion') || (newData.child('cryptoVersion').isString() && newData.child('cryptoVersion').val() == 'v3_ratchet')) && (!newData.hasChild('sequenceNumber') || newData.child('sequenceNumber').isNumber()) && !newData.hasChild('plaintext') && !newData.hasChild('content') && !newData.hasChild('rawKey') && !newData.hasChild('chainKey') && !newData.hasChild('messageKey') && !newData.hasChild('roomMasterKey') && !newData.hasChild('privateKey'))",
             "reactions": {
               "$uid": {
                 ".write": "auth != null && $uid == auth.uid && (root.child('rooms').child($roomId).child('meta').child('participants').child('0').val() == auth.uid || root.child('rooms').child($roomId).child('meta').child('participants').child('1').val() == auth.uid)",

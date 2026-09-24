@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { onChildAdded, onChildChanged, onChildRemoved, onValue, push, ref, remove, update, get } from "firebase/database";
+import { onChildAdded, onChildChanged, onChildRemoved, onValue, push, ref, remove, update, get, set } from "firebase/database";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCrypto } from "@/contexts/CryptoContext";
@@ -16,6 +16,8 @@ import { CameraCapture } from "@/components/CameraCapture";
 import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
 import { markChatRead, touchChatMeta, subscribeProfile } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
+import { receiveMessageV3, receiveMessageV2, encryptMessageV3 } from "@/lib/messageCryptoV2";
+import { acquireV2RoomKey, ensureRoomKeyEnvelopesForMembers } from "@/lib/roomKeyService";
 
 const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
@@ -290,7 +292,8 @@ function ChatInner() {
   const roomId = decodeURIComponent(params.roomId);
   const router = useRouter();
   const { user } = useAuth();
-  const { key, keyword, lock } = useCrypto();
+  const { key, keyword, lock, isV2, epoch, deviceId, identityPrivateKey, unlockV2 } = useCrypto();
+  const [unlockingV2, setUnlockingV2] = useState(false);
 
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [input, setInput] = useState("");
@@ -348,11 +351,22 @@ function ChatInner() {
     return subscribeProfile(otherUid, setFriendProfile);
   }, [otherUid]);
 
-  // Mark chat as read when entering
+  // Mark chat as read and ensure user's own userChats entry exists
   useEffect(() => {
     if (!user?.uid || !roomId) return;
-    markChatRead(roomId, user.uid).catch(() => {});
-  }, [user?.uid, roomId]);
+    const initializeAndMarkRead = async () => {
+      if (otherUid) {
+        await update(ref(db, `userChats/${user.uid}/${roomId}`), {
+          roomId,
+          otherUid,
+          lastMessageAt: Date.now(),
+          unread: 0,
+        });
+      }
+      await markChatRead(roomId, user.uid);
+    };
+    initializeAndMarkRead();
+  }, [user?.uid, roomId, otherUid]);
 
   // Close attach menu on outside click
   useEffect(() => {
@@ -379,17 +393,61 @@ function ChatInner() {
     };
   }, [showOverflowMenu]);
 
-  // Redirect to unlock if no key — runs after mount so AuthGuard has
-  // already confirmed the user is authenticated.
+  // Automatic unlock for V2 rooms or redirect to unlock for V1 rooms
   useEffect(() => {
-    if (!key) {
-      setMessages([]);
-      messageCache.current.clear();
-      for (const u of blobUrls.current.values()) URL.revokeObjectURL(u);
-      blobUrls.current.clear();
-      router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
-    }
-  }, [key, router, roomId]);
+    if (key) return;
+
+    let mounted = true;
+    (async () => {
+      try {
+        const metaSnap = await get(ref(db, `rooms/${roomId}/meta`));
+        if (!metaSnap.exists()) {
+          router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
+          return;
+        }
+        const meta = metaSnap.val();
+        if (meta?.version === "v2_e2ee") {
+          if (mounted) setUnlockingV2(true);
+          try {
+            const res = await acquireV2RoomKey(roomId, meta.currentEpoch || 1);
+            if (mounted) {
+              unlockV2?.(res);
+            }
+          } catch {
+            if (mounted) {
+              setError("Unable to unlock this encrypted conversation on this device.");
+            }
+          } finally {
+            if (mounted) setUnlockingV2(false);
+          }
+        } else {
+          setMessages([]);
+          messageCache.current.clear();
+          for (const u of blobUrls.current.values()) URL.revokeObjectURL(u);
+          blobUrls.current.clear();
+          router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
+        }
+      } catch {
+        router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [key, router, roomId, unlockV2]);
+
+  // Sync envelopes for other room participants in the background
+  useEffect(() => {
+    if (!isV2 || !key || !user || !otherUid) return;
+    ensureRoomKeyEnvelopesForMembers({
+      roomId,
+      roomMasterKey: key,
+      currentEpoch: epoch || 1,
+      myUid: user.uid,
+      otherUid,
+    }).catch(() => {});
+  }, [isV2, key, user, otherUid, roomId, epoch]);
 
   // Lock on tab hidden
   useEffect(() => {
@@ -447,7 +505,29 @@ function ChatInner() {
       }
       if (row.deletedFor?.[uid]) throw new Error("deleted-for-me");
 
-      const plaintext = await decrypt(row.ciphertext, row.iv, cryptoKey).catch(() => "Unable to decrypt message.");
+      let plaintext: string;
+      const rowAny = row as any;
+      if (rowAny.cryptoVersion === "v3_ratchet") {
+        try {
+          plaintext = await receiveMessageV3({
+            message: rowAny,
+            epochKey: cryptoKey,
+          });
+        } catch {
+          plaintext = "Unable to decrypt message.";
+        }
+      } else if (rowAny.cryptoVersion === "v2" || (rowAny.senderDeviceId && rowAny.signature)) {
+        try {
+          plaintext = await receiveMessageV2({
+            message: rowAny,
+            roomMasterKey: cryptoKey,
+          });
+        } catch {
+          plaintext = "Unable to decrypt message.";
+        }
+      } else {
+        plaintext = await decrypt(row.ciphertext, row.iv, cryptoKey).catch(() => "Unable to decrypt message.");
+      }
 
       const cached = messageCache.current.get(id);
       let mediaBlobUrl: string | null = cached?.mediaBlobUrl ?? null;
@@ -784,7 +864,7 @@ function ChatInner() {
         msgType: "sticker",
         stickerUrl: emoji,
       });
-      if (otherUid) touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
+      if (otherUid) await touchChatMeta(roomId, [user.uid, otherUid], user.uid);
     } catch { setError("Could not send sticker."); }
     finally { setSending(false); }
   };
@@ -803,7 +883,7 @@ function ChatInner() {
         gifUrl: url,
         gifPreview: preview,
       });
-      if (otherUid) touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
+      if (otherUid) await touchChatMeta(roomId, [user.uid, otherUid], user.uid);
     } catch { setError("Could not send GIF."); }
     finally { setSending(false); }
   };
@@ -815,6 +895,35 @@ function ChatInner() {
     setSending(true);
     setError("");
     try {
+      if (isV2 && identityPrivateKey && deviceId) {
+        const dto = await encryptMessageV3({
+          roomId,
+          epoch: epoch || 1,
+          senderUid: user.uid,
+          senderDeviceId: deviceId,
+          plaintext: input.trim() || " ",
+          epochKey: key,
+          senderIdentityPrivateKey: identityPrivateKey,
+        });
+        const record: Record<string, unknown> = {
+          ...dto,
+          senderId: user.uid,
+          msgType: "text",
+        };
+        if (replyingTo) record.replyTo = replyingTo.id;
+        if (ghostLifetime) record.expiresAt = Date.now() + ghostLifetime;
+        if (conversationMode === "BURST") record.expiresAt = Date.now() + 60_000;
+        await set(ref(db, `rooms/${roomId}/messages/${dto.messageId}`), record);
+        if (otherUid) {
+          await touchChatMeta(roomId, [user.uid, otherUid], user.uid);
+        }
+        setInput("");
+        setTyping(false);
+        setReplyingTo(null);
+        clearMedia();
+        return;
+      }
+
       const payload = await encrypt(input.trim() || " ", key);
       const record: Record<string, unknown> = {
         ...payload,
@@ -838,7 +947,7 @@ function ChatInner() {
       await push(ref(db, `rooms/${roomId}/messages`), record);
       // Update chat metadata for chat list
       if (otherUid) {
-        touchChatMeta(roomId, [user.uid, otherUid], user.uid).catch(() => {});
+        await touchChatMeta(roomId, [user.uid, otherUid], user.uid);
       }
       setInput("");
       setTyping(false);
@@ -853,8 +962,23 @@ function ChatInner() {
 
   const visibleMessages = messages.filter((message) => !search.trim() || message.plaintext.toLowerCase().includes(search.trim().toLowerCase()));
 
-  // Show a brief loading state while the redirect effect fires
-  if (!key) return <main className="grid min-h-screen place-items-center text-slate-400">Loading room…</main>;
+  // Show error or brief loading state
+  if (!key) {
+    return (
+      <main className="grid min-h-screen place-items-center p-6 text-slate-400">
+        <div className="text-center">
+          <div className="mb-4 text-4xl">🔒</div>
+          {error ? (
+            <p className="text-sm text-red-300 font-medium">{error}</p>
+          ) : unlockingV2 ? (
+            <p className="text-sm text-cyan-300">Unwrapping device keys and initializing ratchet…</p>
+          ) : (
+            <p className="text-sm text-slate-400">Loading room…</p>
+          )}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main
@@ -875,7 +999,9 @@ function ChatInner() {
           <div className="header-text">
             <h1 className="header-title">{friendProfile?.displayName ?? "Private room"}</h1>
             <p className="header-subtitle">
-              {friendProfile
+              {isV2 ? (
+                friendProfile?.online ? "🟢 Online · 🔒 E2EE" : "🔒 End-to-end encrypted"
+              ) : friendProfile
                 ? friendProfile.online
                   ? "🟢 Online"
                   : friendProfile.lastSeen

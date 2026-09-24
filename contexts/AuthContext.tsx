@@ -15,6 +15,7 @@ import {
   type User,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { registerDevice } from "@/lib/deviceService";
 
 type AuthContextValue = {
   user: User | null;
@@ -33,6 +34,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setLoading(false);
+      if (nextUser) {
+        registerDevice(nextUser.uid).catch((err) => {
+          console.warn("Non-blocking E2EE device registration error:", err);
+        });
+      }
     });
   }, []);
 

@@ -16,6 +16,16 @@ type CryptoContextValue = {
   unlocked: boolean;
   unlock: (key: CryptoKey, keyword: string) => void;
   lock: () => void;
+  isV2?: boolean;
+  epoch?: number;
+  deviceId?: string;
+  identityPrivateKey?: CryptoKey | null;
+  unlockV2?: (params: {
+    roomMasterKey: CryptoKey;
+    epoch: number;
+    deviceId: string;
+    identityPrivateKey: CryptoKey;
+  }) => void;
 };
 
 const CryptoContext = createContext<CryptoContextValue | undefined>(
@@ -25,6 +35,10 @@ const CryptoContext = createContext<CryptoContextValue | undefined>(
 export function CryptoProvider({ children }: { children: ReactNode }) {
   const [key, setKey] = useState<CryptoKey | null>(null);
   const [keyword, setKeyword] = useState("");
+  const [isV2, setIsV2] = useState(false);
+  const [epoch, setEpoch] = useState(1);
+  const [deviceId, setDeviceId] = useState("");
+  const [identityPrivateKey, setIdentityPrivateKey] = useState<CryptoKey | null>(null);
   // Timestamp of last unlock — visibility lock is suppressed for 2s after
   // unlock to survive the brief visibilitychange:hidden that browsers fire
   // during page navigation.
@@ -35,11 +49,30 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
     unlockedAt.current = Date.now();
     setKey(derivedKey);
     setKeyword(nextKeyword);
+    setIsV2(false);
+    setIdentityPrivateKey(null);
+  }, []);
+
+  const unlockV2 = useCallback((params: {
+    roomMasterKey: CryptoKey;
+    epoch: number;
+    deviceId: string;
+    identityPrivateKey: CryptoKey;
+  }) => {
+    unlockedAt.current = Date.now();
+    setKey(params.roomMasterKey);
+    setKeyword("");
+    setIsV2(true);
+    setEpoch(params.epoch);
+    setDeviceId(params.deviceId);
+    setIdentityPrivateKey(params.identityPrivateKey);
   }, []);
 
   const lock = useCallback(() => {
     setKey(null);
     setKeyword("");
+    setIsV2(false);
+    setIdentityPrivateKey(null);
   }, []);
 
   useEffect(() => {
@@ -83,8 +116,13 @@ export function CryptoProvider({ children }: { children: ReactNode }) {
       unlocked: key !== null,
       unlock,
       lock,
+      isV2,
+      epoch,
+      deviceId,
+      identityPrivateKey,
+      unlockV2,
     }),
-    [key, keyword, unlock, lock]
+    [key, keyword, unlock, lock, isV2, epoch, deviceId, identityPrivateKey, unlockV2]
   );
 
   return (

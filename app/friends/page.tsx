@@ -51,17 +51,11 @@ function FriendRow({ uid, myUid, filter }: { uid: string; myUid: string; filter:
   }
 
   async function handleMessage() {
-    if (!key) {
-      // No key available — navigate to chat directly; chat page will handle unlock redirect
-      router.push(`/chat/${encodeURIComponent(privateRoomId(myUid, uid))}`);
-      return;
-    }
     setOpening(true);
     try {
-      const roomId = await ensurePrivateRoom(myUid, uid, key);
+      const roomId = await ensurePrivateRoom(myUid, uid, key ?? undefined);
       router.push(`/chat/${encodeURIComponent(roomId)}`);
     } catch {
-      // If ensurePrivateRoom fails (e.g. permission), just navigate — chat page handles it
       router.push(`/chat/${encodeURIComponent(privateRoomId(myUid, uid))}`);
     } finally {
       setOpening(false);

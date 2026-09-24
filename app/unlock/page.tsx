@@ -16,15 +16,146 @@ function errorCode(error: unknown): string {
 }
 
 function UnlockInner() {
-  const router = useRouter(); const params = useSearchParams(); const roomId = params.get("roomId") || "";
-  const { key, unlock } = useCrypto(); const [passphrase,setPassphrase]=useState(""); const [keyword,setKeyword]=useState(""); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
-  useEffect(()=>{ if(key && roomId) router.replace(`/chat/${encodeURIComponent(roomId)}`); },[key,roomId,router]);
-  async function submit(e: FormEvent){e.preventDefault(); if(!roomId){setError("Missing room ID.");return;} setBusy(true);setError("");let stage="room verifier read";try{const snapshot=await get(ref(db,`rooms/${roomId}/meta/keyCheck`));const keyCheck=snapshot.val() as {ciphertext?:string;iv?:string}|null;if(!keyCheck?.ciphertext||!keyCheck.iv)throw new Error("Room verifier is missing");stage="passphrase verification";const derivedKey=await deriveKey(passphrase,roomId);await decrypt(keyCheck.ciphertext,keyCheck.iv,derivedKey);unlock(derivedKey,keyword);router.replace(`/chat/${encodeURIComponent(roomId)}`);}catch(error){const code=errorCode(error);if(code.includes("PERMISSION_DENIED")||code.includes("PERMISSION-DENIED")){setError("This Firebase account is not one of the two room participants. Sign in with the participant UID used during room setup.");}else if(code.includes("NETWORK")||code.includes("DISCONNECTED")){setError("Firebase could not be reached. Check the database connection.");}else if(stage==="passphrase verification"){setError("Incorrect encryption passphrase.");}else{setError(`Unlock failed during ${stage}. Check the room ID and Firebase configuration.`);}}finally{setBusy(false)}}
-  return <main className="grid min-h-screen place-items-center p-6"><form onSubmit={submit} className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[.04] p-8">
-    <div className="mb-6 text-4xl">🔒</div><h1 className="text-3xl font-semibold">Unlock room</h1><p className="mt-2 text-sm text-slate-400">The passphrase and display keyword stay in memory only. They are never sent to Firebase.</p>
-    <label className="mt-6 mb-3 block text-sm">Shared encryption passphrase<input autoFocus type="password" required value={passphrase} onChange={e=>setPassphrase(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400" /></label>
-    <label className="mb-3 block text-sm">Shared display keyword<input type="password" required value={keyword} onChange={e=>setKeyword(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400" /></label>
-    <p className="text-xs text-slate-500">Room: {roomId || "not specified"}</p>{error&&<p className="my-3 text-sm text-red-300">{error}</p>}<button disabled={busy} className="mt-4 w-full rounded-xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 disabled:opacity-50">{busy?"Deriving key…":"Unlock"}</button>
-  </form></main>;
+  const router = useRouter();
+  const params = useSearchParams();
+  const roomId = params.get("roomId") || "";
+  const { key, unlock, unlockV2 } = useCrypto();
+  const [passphrase, setPassphrase] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [isV2, setIsV2] = useState(false);
+
+  useEffect(() => {
+    if (key && roomId) {
+      router.replace(`/chat/${encodeURIComponent(roomId)}`);
+      return;
+    }
+    if (!roomId) return;
+
+    let mounted = true;
+    (async () => {
+      try {
+        const metaSnap = await get(ref(db, `rooms/${roomId}/meta`));
+        if (!metaSnap.exists()) return;
+        const meta = metaSnap.val();
+        if (meta?.version === "v2_e2ee") {
+          if (mounted) {
+            setIsV2(true);
+            setBusy(true);
+          }
+          try {
+            const { acquireV2RoomKey } = await import("@/lib/roomKeyService");
+            const res = await acquireV2RoomKey(roomId, meta.currentEpoch || 1);
+            if (mounted) {
+              unlockV2?.(res);
+              router.replace(`/chat/${encodeURIComponent(roomId)}`);
+            }
+          } catch {
+            if (mounted) {
+              setError("Unable to unlock this encrypted conversation on this device.");
+            }
+          } finally {
+            if (mounted) setBusy(false);
+          }
+        }
+      } catch {
+        // Network or permission check failure — fallback to manual if applicable
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [key, roomId, router, unlockV2]);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!roomId) {
+      setError("Missing room ID.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    let stage = "room verifier read";
+    try {
+      const snapshot = await get(ref(db, `rooms/${roomId}/meta/keyCheck`));
+      const keyCheck = snapshot.val() as { ciphertext?: string; iv?: string } | null;
+      if (!keyCheck?.ciphertext || !keyCheck.iv) throw new Error("Room verifier is missing");
+      stage = "passphrase verification";
+      const derivedKey = await deriveKey(passphrase, roomId);
+      await decrypt(keyCheck.ciphertext, keyCheck.iv, derivedKey);
+      unlock(derivedKey, keyword);
+      router.replace(`/chat/${encodeURIComponent(roomId)}`);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code.includes("PERMISSION_DENIED") || code.includes("PERMISSION-DENIED")) {
+        setError("This Firebase account is not one of the two room participants. Sign in with the participant UID used during room setup.");
+      } else if (code.includes("NETWORK") || code.includes("DISCONNECTED")) {
+        setError("Firebase could not be reached. Check the database connection.");
+      } else if (stage === "passphrase verification") {
+        setError("Incorrect encryption passphrase.");
+      } else {
+        setError(`Unlock failed during ${stage}. Check the room ID and Firebase configuration.`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (isV2) {
+    return (
+      <main className="grid min-h-screen place-items-center p-6">
+        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[.04] p-8 text-center">
+          <div className="mb-6 text-4xl">🔒</div>
+          <h1 className="text-2xl font-semibold">End-to-end encrypted room</h1>
+          {busy ? (
+            <p className="mt-4 text-sm text-cyan-300">Unwrapping device keys and initializing ratchet…</p>
+          ) : error ? (
+            <p className="mt-4 text-sm text-red-300">{error}</p>
+          ) : (
+            <p className="mt-4 text-sm text-slate-400">Opening encrypted conversation…</p>
+          )}
+          <p className="mt-6 text-xs text-slate-500">Room: {roomId}</p>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="grid min-h-screen place-items-center p-6">
+      <form onSubmit={submit} className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[.04] p-8">
+        <div className="mb-6 text-4xl">🔒</div>
+        <h1 className="text-3xl font-semibold">Unlock room</h1>
+        <p className="mt-2 text-sm text-slate-400">The passphrase and display keyword stay in memory only. They are never sent to Firebase.</p>
+        <label className="mt-6 mb-3 block text-sm">
+          Shared encryption passphrase
+          <input
+            autoFocus
+            type="password"
+            required
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400"
+          />
+        </label>
+        <label className="mb-3 block text-sm">
+          Shared display keyword
+          <input
+            type="password"
+            required
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 outline-none focus:border-cyan-400"
+          />
+        </label>
+        <p className="text-xs text-slate-500">Room: {roomId || "not specified"}</p>
+        {error && <p className="my-3 text-sm text-red-300">{error}</p>}
+        <button disabled={busy} className="mt-4 w-full rounded-xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 disabled:opacity-50">
+          {busy ? "Deriving key…" : "Unlock"}
+        </button>
+      </form>
+    </main>
+  );
 }
 export default function UnlockPage(){return <AuthGuard><UnlockInner/></AuthGuard>}
