@@ -16,6 +16,7 @@ import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   isWebCryptoSupported,
+  verifyDeviceIdentityBundle,
 } from '@/lib/cryptoV2';
 import {
   getOrCreateDeviceIdentity,
@@ -557,8 +558,10 @@ export async function getRoomKeyEnvelope(
     const envRef = ref(db, `rooms/${roomId}/keyEnvelopes/${epoch}/${deviceId}`);
     const snapshot = await get(envRef);
     if (snapshot.exists()) {
+      console.info("[getRoomKeyEnvelope:found]", { roomId, deviceId, epoch, path: `rooms/${roomId}/keyEnvelopes/${epoch}/${deviceId}` });
       return snapshot.val() as RoomKeyEnvelopeDTO;
     }
+    console.info("[getRoomKeyEnvelope:not_found]", { roomId, deviceId, epoch, path: `rooms/${roomId}/keyEnvelopes/${epoch}/${deviceId}` });
     return null;
   }
 
@@ -567,10 +570,12 @@ export async function getRoomKeyEnvelope(
   const snapshot = await get(legacyEnvRef);
 
   if (!snapshot.exists()) {
+    console.info("[getRoomKeyEnvelope:not_found_legacy]", { roomId, deviceId, path: `rooms/${roomId}/keyEnvelopes/${deviceId}` });
     return null;
   }
 
   const dto = snapshot.val() as RoomKeyEnvelopeDTO;
+  console.info("[getRoomKeyEnvelope:found_legacy]", { roomId, deviceId, epoch: dto.epoch || 1, path: `rooms/${roomId}/keyEnvelopes/${deviceId}` });
   return {
     ...dto,
     epoch: dto.epoch || 1,
@@ -613,11 +618,14 @@ export async function acquireV2RoomKey(
   if (epoch === undefined) {
     const metaSnap = await get(ref(db, `rooms/${roomId}/meta`));
     if (!metaSnap.exists()) {
+      console.warn("[acquireV2RoomKey:failed]", { roomId, reason: "meta_missing" });
       throw new Error('Unable to unlock this encrypted conversation on this device.');
     }
     const meta = metaSnap.val();
     epoch = typeof meta.currentEpoch === 'number' ? meta.currentEpoch : 1;
   }
+
+  console.info("[acquireV2RoomKey:start]", { roomId, expectedEpoch: epoch, currentDeviceId: deviceId });
 
   // 1. Look up envelope for this device
   let envelope = await getRoomKeyEnvelope(roomId, deviceId, epoch);
@@ -626,32 +634,80 @@ export async function acquireV2RoomKey(
   }
 
   if (!envelope) {
+    console.warn("[acquireV2RoomKey:failed]", { roomId, reason: "envelope_missing", currentDeviceId: deviceId, epoch });
     throw new Error('Unable to unlock this encrypted conversation on this device.');
   }
+
+  console.info("[acquireV2RoomKey:envelope_found]", {
+    roomId,
+    epoch: envelope.epoch || epoch,
+    envelopeDeviceId: envelope.deviceId,
+    envelopeEpoch: envelope.epoch,
+    senderDeviceId: envelope.senderDeviceId,
+    senderUid: envelope.senderUid,
+  });
 
   // 2. Fetch sender device public bundle
   const senderBundle = await getDevice(envelope.senderUid, envelope.senderDeviceId);
   if (!senderBundle) {
+    console.warn("[acquireV2RoomKey:failed]", { roomId, reason: "sender_device_missing", senderUid: envelope.senderUid, senderDeviceId: envelope.senderDeviceId });
     throw new Error('Unable to unlock this encrypted conversation on this device.');
   }
 
+  // Verify sender device bundle signature
+  let senderBundleVerifyResult = false;
+  try {
+    senderBundleVerifyResult = await verifyDeviceIdentityBundle(senderBundle);
+  } catch (e) {
+    console.warn("[acquireV2RoomKey:sender_bundle_verify_error]", { roomId, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
+  }
+  if (!senderBundleVerifyResult) {
+    console.warn("[acquireV2RoomKey:failed]", { roomId, reason: "sender_bundle_signature_invalid", senderUid: envelope.senderUid, senderDeviceId: envelope.senderDeviceId });
+    throw new Error('Unable to unlock this encrypted conversation on this device.');
+  }
+  console.info("[acquireV2RoomKey:sender_bundle_verified]", { roomId, senderUid: envelope.senderUid, senderDeviceId: envelope.senderDeviceId });
+
+  // Verify envelope signature
+  let envelopeVerifyResult = false;
+  try {
+    envelopeVerifyResult = await verifyRoomKeyEnvelope(envelope, senderBundle.payload.identityPublicKey);
+  } catch (e) {
+    console.warn("[acquireV2RoomKey:envelope_verify_error]", { roomId, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e) });
+  }
+  if (!envelopeVerifyResult) {
+    console.warn("[acquireV2RoomKey:failed]", { roomId, reason: "envelope_signature_invalid", senderUid: envelope.senderUid, senderDeviceId: envelope.senderDeviceId });
+    throw new Error('Unable to unlock this encrypted conversation on this device.');
+  }
+  console.info("[acquireV2RoomKey:envelope_verified]", { roomId, senderUid: envelope.senderUid });
+
   // 3. Unwrap room key envelope
   const finalEpoch = envelope.epoch || epoch || 1;
-  const roomMasterKey = await unwrapRoomKey({
-    envelope,
-    expectedDeviceId: deviceId,
-    recipientExchangePrivateKey: record.exchangePrivateKey,
-    senderExchangePublicKey: senderBundle.payload.exchangePublicKey,
-    senderIdentityPublicKey: senderBundle.payload.identityPublicKey,
-    expectedEpoch: finalEpoch,
-  });
-
-  return {
-    roomMasterKey,
-    epoch: finalEpoch,
-    deviceId,
-    identityPrivateKey: record.identityPrivateKey,
-  };
+  try {
+    const roomMasterKey = await unwrapRoomKey({
+      envelope,
+      expectedDeviceId: deviceId,
+      recipientExchangePrivateKey: record.exchangePrivateKey,
+      senderExchangePublicKey: senderBundle.payload.exchangePublicKey,
+      senderIdentityPublicKey: senderBundle.payload.identityPublicKey,
+      expectedEpoch: finalEpoch,
+    });
+    console.info("[acquireV2RoomKey:unwrap_success]", { roomId, epoch: finalEpoch, deviceId });
+    return {
+      roomMasterKey,
+      epoch: finalEpoch,
+      deviceId,
+      identityPrivateKey: record.identityPrivateKey,
+    };
+  } catch (err) {
+    console.warn("[acquireV2RoomKey:failed]", {
+      roomId,
+      reason: "unwrap_failed",
+      epoch: finalEpoch,
+      deviceId,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    });
+    throw new Error('Unable to unlock this encrypted conversation on this device.');
+  }
 }
 
 /**
@@ -667,9 +723,15 @@ export async function ensureRoomKeyEnvelopesForMembers(params: {
 }): Promise<void> {
   const { roomId, roomMasterKey, currentEpoch, myUid, otherUid } = params;
   try {
+    console.info("[ensureRoomKeyEnvelopesForMembers:start]", { roomId, currentEpoch, myUid, otherUid });
     const { record } = await getOrCreateDeviceIdentity();
     const otherDevices = await getUserDevices(otherUid);
-    if (!otherDevices || otherDevices.length === 0) return;
+    if (!otherDevices || otherDevices.length === 0) {
+      console.info("[ensureRoomKeyEnvelopesForMembers:no_devices]", { roomId, otherUid });
+      return;
+    }
+
+    console.info("[ensureRoomKeyEnvelopesForMembers:devices_found]", { roomId, otherUid, deviceCount: otherDevices.length, deviceIds: otherDevices.map(d => d.payload.deviceId) });
 
     const now = Date.now();
     const updates: Record<string, any> = {};
@@ -679,6 +741,7 @@ export async function ensureRoomKeyEnvelopesForMembers(params: {
       const devId = dev.payload.deviceId;
       const existing = await getRoomKeyEnvelope(roomId, devId, currentEpoch);
       if (!existing) {
+        console.info("[ensureRoomKeyEnvelopesForMembers:creating_envelope]", { roomId, currentEpoch, recipientUid: otherUid, recipientDeviceId: devId });
         const envelope = await wrapRoomKeyForDevice({
           roomId,
           epoch: currentEpoch,
@@ -695,13 +758,19 @@ export async function ensureRoomKeyEnvelopesForMembers(params: {
 
         updates[`rooms/${roomId}/keyEnvelopes/${currentEpoch}/${devId}`] = envelope;
         needsUpdate = true;
+      } else {
+        console.info("[ensureRoomKeyEnvelopesForMembers:envelope_exists]", { roomId, currentEpoch, recipientDeviceId: devId });
       }
     }
 
     if (needsUpdate) {
+      console.info("[ensureRoomKeyEnvelopesForMembers:writing]", { roomId, count: Object.keys(updates).length });
       await update(ref(db), updates);
+      console.info("[ensureRoomKeyEnvelopesForMembers:write_success]", { roomId });
+    } else {
+      console.info("[ensureRoomKeyEnvelopesForMembers:no_updates_needed]", { roomId });
     }
   } catch (err) {
-    console.warn('[ensureRoomKeyEnvelopesForMembers] non-blocking error:', err);
+    console.warn("[ensureRoomKeyEnvelopesForMembers:error]", { roomId, error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) });
   }
 }

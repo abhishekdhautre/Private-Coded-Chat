@@ -445,13 +445,16 @@ function ChatInner() {
   // Sync envelopes for other room participants in the background
   useEffect(() => {
     if (!isV2 || !key || !user || !otherUid) return;
+    console.info("[page:ensureEnvelopes:start]", { roomId, myUid: user.uid, otherUid, epoch: epoch || 1 });
     ensureRoomKeyEnvelopesForMembers({
       roomId,
       roomMasterKey: key,
       currentEpoch: epoch || 1,
       myUid: user.uid,
       otherUid,
-    }).catch(() => {});
+    })
+      .then(() => console.info("[page:ensureEnvelopes:complete]", { roomId }))
+      .catch((err) => console.warn("[page:ensureEnvelopes:error]", { roomId, error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) }));
   }, [isV2, key, user, otherUid, roomId, epoch]);
 
   // Lock on tab hidden

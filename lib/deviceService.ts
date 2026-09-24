@@ -145,10 +145,12 @@ export async function getDevice(
   uid: string,
   deviceId: string
 ): Promise<SignedDeviceIdentityBundle | null> {
+  console.info("[getDevice:start]", { uid, deviceId });
   const deviceRef = ref(db, `users/${uid}/devices/${deviceId}`);
   const snapshot = await get(deviceRef);
 
   if (!snapshot.exists()) {
+    console.warn("[getDevice:not_found]", { uid, deviceId });
     return null;
   }
 
@@ -165,9 +167,11 @@ export async function getDevice(
 
   const isValid = await verifyDeviceIdentityBundle(bundle).catch(() => false);
   if (!isValid) {
+    console.warn("[getDevice:signature_invalid]", { uid, deviceId });
     // Check if this is the authenticated user's OWN device from IndexedDB
     const localRecord = await loadDeviceKeys().catch(() => null);
     if (localRecord && localRecord.deviceId === deviceId) {
+      console.info("[getDevice:attempting_repair]", { uid, deviceId });
       const repairedBundle = await createDeviceIdentityBundle(
         localRecord.deviceId,
         {
@@ -192,6 +196,7 @@ export async function getDevice(
           signature: repairedBundle.signature,
         };
         await set(deviceRef, payloadToStore).catch(() => {});
+        console.info("[getDevice:repaired]", { uid, deviceId });
         return repairedBundle;
       }
     }
@@ -201,6 +206,7 @@ export async function getDevice(
     );
   }
 
+  console.info("[getDevice:success]", { uid, deviceId });
   return bundle;
 }
 
@@ -211,16 +217,20 @@ export async function getDevice(
 export async function getUserDevices(
   uid: string
 ): Promise<SignedDeviceIdentityBundle[]> {
+  console.info("[getUserDevices:start]", { uid });
   const userDevicesRef = ref(db, `users/${uid}/devices`);
   const snapshot = await get(userDevicesRef);
 
   if (!snapshot.exists()) {
+    console.info("[getUserDevices:not_found]", { uid });
     return [];
   }
 
   const devicesMap = snapshot.val() as Record<string, RegisteredDeviceDTO>;
   const verifiedBundles: SignedDeviceIdentityBundle[] = [];
   const localRecord = await loadDeviceKeys().catch(() => null);
+
+  console.info("[getUserDevices:devices_in_db]", { uid, count: Object.keys(devicesMap).length, deviceIds: Object.keys(devicesMap) });
 
   for (const [deviceId, data] of Object.entries(devicesMap)) {
     try {
@@ -237,11 +247,15 @@ export async function getUserDevices(
       const isValid = await verifyDeviceIdentityBundle(bundle).catch(() => false);
       if (isValid) {
         verifiedBundles.push(bundle);
+        console.info("[getUserDevices:device_verified]", { uid, deviceId: data.deviceId || deviceId });
         continue;
       }
 
+      console.warn("[getUserDevices:device_signature_invalid]", { uid, deviceId: data.deviceId || deviceId });
+
       // If the authenticated user's OWN current device fails signature verification, repair it
       if (localRecord && localRecord.deviceId === (data.deviceId || deviceId)) {
+        console.info("[getUserDevices:attempting_repair]", { uid, deviceId: data.deviceId || deviceId });
         const repairedBundle = await createDeviceIdentityBundle(
           localRecord.deviceId,
           {
@@ -267,18 +281,18 @@ export async function getUserDevices(
           };
           await set(ref(db, `users/${uid}/devices/${repairedBundle.payload.deviceId}`), payloadToStore).catch(() => {});
           verifiedBundles.push(repairedBundle);
+          console.info("[getUserDevices:device_repaired]", { uid, deviceId: repairedBundle.payload.deviceId });
           continue;
         }
       }
 
-      console.warn(
-        `Skipping device ${deviceId} for user ${uid}: signature verification failed.`
-      );
+      console.warn('[getUserDevices] Skipping device, signature verification failed:', deviceId);
     } catch (err) {
-      console.warn(`Error processing device ${deviceId} for user ${uid}:`, err);
+      console.warn(`[getUserDevices] Error processing device ${deviceId} for user ${uid}:`, err);
     }
   }
 
+  console.info("[getUserDevices:complete]", { uid, verifiedCount: verifiedBundles.length });
   return verifiedBundles;
 }
 
