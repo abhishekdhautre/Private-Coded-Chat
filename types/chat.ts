@@ -14,6 +14,9 @@ export type StoredMessage = {
   mediaType?: string | null;
   mediaData?: string | null;
   mediaIv?: string | null;
+  // Real MIME type of the picked file (image/heic, image/png, video/quicktime…).
+  // Optional: rows written before this existed fall back to a legacy guess.
+  mediaMime?: string | null;
   // extended type
   msgType?: MessageType;
   // sticker: stickerUrl stored as plaintext (not sensitive)

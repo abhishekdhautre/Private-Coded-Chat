@@ -10,6 +10,7 @@ import { db } from "@/lib/firebase";
 import { decrypt, decryptBytes, encrypt, encryptBytes } from "@/lib/crypto";
 import { encodeText, resolveDisplayKeyword } from "@/lib/cipher";
 import { isDuplicateDelivery } from "@/lib/messageDedupe";
+import { isMediaReady, mediaBlobMime, outgoingMediaMime } from "@/lib/mediaMime";
 import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
 import { GifPicker } from "@/components/GifPicker";
@@ -116,6 +117,10 @@ function MessageBubble({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionOpen, setReactionOpen] = useState(false);
+  // Set when the browser fails to decode the decrypted media object URL.
+  // Without this a failed <img>/<video> collapses to nothing and the message
+  // looks like it never arrived; with it we show the honest placeholder.
+  const [mediaDecodeFailed, setMediaDecodeFailed] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -123,6 +128,9 @@ function MessageBubble({
   const isMedia = !!m.mediaType;
   const isSticker = m.msgType === "sticker";
   const isGif = m.msgType === "gif";
+
+  // A new (or newly decrypted) object URL deserves a fresh decode attempt.
+  useEffect(() => { setMediaDecodeFailed(false); }, [m.mediaBlobUrl]);
 
   // Aggregate reactions: { emoji: count, myEmoji }
   const reactionEntries = m.reactions ? Object.entries(m.reactions) : [];
@@ -210,7 +218,7 @@ function MessageBubble({
           )}
 
           {/* Media (image/video) */}
-          {isMedia && m.mediaBlobUrl && (
+          {isMedia && m.mediaBlobUrl && !mediaDecodeFailed && (
             <div className="mb-2">
               {m.mediaType === "image" ? (
                 <img
@@ -220,6 +228,16 @@ function MessageBubble({
                   draggable={false}
                   onContextMenu={(e) => e.preventDefault()}
                   onClick={() => { if (m.viewOnce && !m.consumedBy?.[myUid]) onConsume(m.id); }}
+                  onError={() => {
+                    // Safe metadata only: never the payload or the URL contents.
+                    console.warn("[chat:media:decode-failed]", {
+                      messageId: m.id,
+                      mediaType: m.mediaType,
+                      mediaMime: m.mediaMime ?? null,
+                      hasBlobUrl: !!m.mediaBlobUrl,
+                    });
+                    setMediaDecodeFailed(true);
+                  }}
                 />
               ) : (
                 <video
@@ -228,11 +246,20 @@ function MessageBubble({
                   className="max-w-[260px] rounded-xl"
                   controlsList="nodownload"
                   onContextMenu={(e) => e.preventDefault()}
+                  onError={() => {
+                    console.warn("[chat:media:decode-failed]", {
+                      messageId: m.id,
+                      mediaType: m.mediaType,
+                      mediaMime: m.mediaMime ?? null,
+                      hasBlobUrl: !!m.mediaBlobUrl,
+                    });
+                    setMediaDecodeFailed(true);
+                  }}
                 />
               )}
             </div>
           )}
-          {isMedia && !m.mediaBlobUrl && (
+          {isMedia && (!m.mediaBlobUrl || mediaDecodeFailed) && (
             <p className="text-xs text-slate-500 italic">Media expired or unavailable.</p>
           )}
 
@@ -712,6 +739,16 @@ function ChatInner() {
     async function decryptRow(id: string, row: StoredMessage): Promise<DecryptedMessage> {
       const now = Date.now();
       if (row.expiresAt && row.expiresAt <= now) {
+        // Safe diagnostics: identifiers/timings only — tells us whether the row
+        // arrived after its disappearing window (slow upload / late delivery).
+        console.info("[chat:message-expired]", {
+          messageId: id,
+          mediaType: row.mediaType ?? null,
+          hasMedia: !!row.mediaData,
+          sentAt: row.timestamp ?? null,
+          expiresAt: row.expiresAt,
+          latenessMs: now - row.expiresAt,
+        });
         remove(ref(db, `${msgsPath}/${id}`)).catch(() => {});
         throw new Error("expired");
       }
@@ -722,14 +759,18 @@ function ChatInner() {
       // (listener re-attach, StrictMode remount). Return the cache WITHOUT
       // touching crypto, so it is never misreported as a replay attack.
       // Failures are never in decryptedOkIds, so they stay retryable; edits
-      // (changed ciphertext/media) always re-decrypt.
+      // (changed ciphertext/media) always re-decrypt. A row whose media never
+      // produced an object URL is also NOT considered processed, so the media
+      // pipeline is retried on redelivery instead of being stuck forever.
       const rowAny = row as any;
       const preCached = messageCache.current.get(id);
       if (
         preCached &&
         isDuplicateDelivery({
           cached: preCached,
-          decryptedSuccessfully: decryptedOkIds.current.has(id),
+          decryptedSuccessfully:
+            decryptedOkIds.current.has(id) &&
+            isMediaReady(preCached, preCached.mediaBlobUrl),
           row: rowAny,
         })
       ) {
@@ -781,25 +822,54 @@ function ChatInner() {
       const cached = messageCache.current.get(id);
       let mediaBlobUrl: string | null = cached?.mediaBlobUrl ?? null;
       if (row.mediaData && row.mediaIv && row.mediaType) {
-        const mediaChanged = !cached || cached.mediaData !== row.mediaData;
+        // Re-run when the payload changed OR when a previous attempt never
+        // produced a usable object URL — a media failure must stay retryable.
+        const mediaChanged = !cached || cached.mediaData !== row.mediaData || !cached.mediaBlobUrl;
         if (mediaChanged) {
           const old = blobUrls.current.get(id);
           if (old) { URL.revokeObjectURL(old); blobUrls.current.delete(id); }
+          // Rebuild the Blob with the file's REAL MIME type (image/heic,
+          // video/quicktime, …). The legacy "image/jpeg"/"video/mp4" guess made
+          // WebKit fail to decode phone-originated media, so the message
+          // rendered as nothing at all.
+          const blobMime = mediaBlobMime(row);
           try {
             const bytes = await decryptBytes(row.mediaData, row.mediaIv, cryptoKey);
-            const mime = row.mediaType === "image" ? "image/jpeg" : "video/mp4";
             const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-            mediaBlobUrl = URL.createObjectURL(new Blob([buf], { type: mime }));
-            blobUrls.current.set(id, mediaBlobUrl);
-          } catch { mediaBlobUrl = null; }
+            const url = URL.createObjectURL(new Blob([buf], { type: blobMime }));
+            mediaBlobUrl = url;
+            blobUrls.current.set(id, url);
+            console.info("[chat:media:blob-ok]", {
+              messageId: id,
+              mediaType: row.mediaType,
+              mediaMime: row.mediaMime ?? null,
+              blobMime,
+              encryptedBase64Length: row.mediaData.length,
+              plainByteLength: bytes.byteLength,
+            });
+          } catch (err) {
+            mediaBlobUrl = null;
+            console.warn("[chat:media:decrypt-failed]", {
+              messageId: id,
+              mediaType: row.mediaType,
+              mediaMime: row.mediaMime ?? null,
+              blobMime,
+              encryptedBase64Length: row.mediaData.length,
+              error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+            });
+          }
+        } else {
+          console.info("[chat:media:reused-blob]", { messageId: id, mediaType: row.mediaType });
         }
       }
 
       const msg: DecryptedMessage = { ...row, id, plaintext, mediaBlobUrl };
       messageCache.current.set(id, msg);
-      // Only successful decryptions suppress future duplicate deliveries.
-      // Failures stay out of this set so redelivery retries decryption.
-      if (decryptOk) decryptedOkIds.current.add(id);
+      // Only a message that decrypted AND produced its media object URL
+      // suppresses future duplicate deliveries. Otherwise a transient media
+      // failure would be cached as "processed" and the photo could never be
+      // rendered on a later redelivery.
+      if (decryptOk && isMediaReady(row, mediaBlobUrl)) decryptedOkIds.current.add(id);
       return msg;
     }
 
@@ -814,10 +884,16 @@ function ChatInner() {
       const row = snap.val() as StoredMessage;
       // Already decrypted + rendered with identical payload: duplicate delivery
       // from a listener re-attach. Ignore silently (no crypto, no console noise).
+      // A row whose media never produced an object URL is not "processed", so
+      // it falls through and the media pipeline is retried.
       const already = messageCache.current.get(id);
       if (
         already &&
-        isDuplicateDelivery({ cached: already, decryptedSuccessfully: decryptedOkIds.current.has(id), row: row as any })
+        isDuplicateDelivery({
+          cached: already,
+          decryptedSuccessfully: decryptedOkIds.current.has(id) && isMediaReady(already, already.mediaBlobUrl),
+          row: row as any,
+        })
       ) {
         return;
       }
@@ -827,6 +903,18 @@ function ChatInner() {
         if (disappearingRef.current) {
           update(ref(db), { [`rooms/${roomId}/meta/disappearingViewedAt/${uid}`]: Date.now() }).catch(() => {});
         }
+        if (row.mediaData) {
+          // Safe metadata: confirms the row reached React state and whether
+          // the object URL survived reconstruction.
+          console.info("[chat:message:added]", {
+            messageId: id,
+            mediaType: row.mediaType ?? null,
+            mediaMime: row.mediaMime ?? null,
+            hasBlobUrl: !!msg.mediaBlobUrl,
+            viewOnce: !!row.viewOnce,
+            expiresAt: row.expiresAt ?? null,
+          });
+        }
         setMessages((prev) => {
           if (prev.some((m) => m.id === id)) return prev;
           if (document.visibilityState !== "visible") setUnread((c) => c + 1);
@@ -834,7 +922,19 @@ function ChatInner() {
           next.sort((a, b) => a.timestamp - b.timestamp);
           return next;
         });
-      } catch { /* expired or deleted-for-me — skip */ }
+      } catch (err) {
+        // Never swallow silently: distinguish the intentional skips
+        // (expired / deleted-for-me) from anything unexpected.
+        const reason = err instanceof Error ? err.message : String(err);
+        if (reason !== "expired" && reason !== "deleted-for-me") {
+          console.warn("[chat:message:add-failed]", {
+            messageId: id,
+            mediaType: row.mediaType ?? null,
+            hasMedia: !!row.mediaData,
+            reason,
+          });
+        }
+      }
     });
 
     const unsubChanged = onChildChanged(ref(db, msgsPath), async (snap) => {
@@ -851,8 +951,15 @@ function ChatInner() {
       }
 
       const cached = messageCache.current.get(id);
-      // Metadata-only change (readBy, reactions, pinned…) — patch without decrypting
-      if (cached && cached.ciphertext === row.ciphertext && cached.mediaData === row.mediaData) {
+      // Metadata-only change (readBy, reactions, pinned…) — patch without decrypting.
+      // Only when the cached media object URL is usable; otherwise fall through
+      // and retry the media pipeline.
+      if (
+        cached &&
+        cached.ciphertext === row.ciphertext &&
+        cached.mediaData === row.mediaData &&
+        isMediaReady(cached, cached.mediaBlobUrl)
+      ) {
         const updated: DecryptedMessage = { ...cached, ...row, id, plaintext: cached.plaintext, mediaBlobUrl: cached.mediaBlobUrl };
         messageCache.current.set(id, updated);
         setMessages((prev) => prev.map((m) => m.id === id ? updated : m));
@@ -862,7 +969,16 @@ function ChatInner() {
       try {
         const msg = await decryptRow(id, row);
         setMessages((prev) => prev.map((m) => m.id === id ? msg : m));
-      } catch {
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (reason !== "expired" && reason !== "deleted-for-me") {
+          console.warn("[chat:message:change-failed]", {
+            messageId: id,
+            mediaType: row.mediaType ?? null,
+            hasMedia: !!row.mediaData,
+            reason,
+          });
+        }
         messageCache.current.delete(id);
         decryptedOkIds.current.delete(id);
         setMessages((prev) => prev.filter((m) => m.id !== id));
@@ -1218,19 +1334,69 @@ function ChatInner() {
           // Same encrypted-media pipeline as V1 rooms: media bytes are sealed
           // with the room key both sides already hold, and the recipient's
           // decryptRow() already decrypts mediaData/mediaIv with that key.
-          // Previously this branch silently discarded the attachment.
-          const bytes = new Uint8Array(await mediaFile.arrayBuffer());
-          const { data, iv } = await encryptBytes(bytes, key);
-          record.mediaData = data;
-          record.mediaIv = iv;
-          record.mediaType = mediaFile.type.startsWith("image/") ? "image" : "video";
-          record.msgType = record.mediaType;
+          const mediaKind: "image" | "video" = mediaFile.type.startsWith("image/") ? "image" : "video";
+          let bytes: Uint8Array;
+          try {
+            bytes = new Uint8Array(await mediaFile.arrayBuffer());
+          } catch (err) {
+            console.warn("[send:media:read-failed]", {
+              roomId,
+              mediaType: mediaKind,
+              mediaMime: mediaFile.type || null,
+              fileByteLength: mediaFile.size,
+              error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+            });
+            throw err;
+          }
+          let encrypted: { data: string; iv: string };
+          try {
+            encrypted = await encryptBytes(bytes, key);
+          } catch (err) {
+            console.warn("[send:media:encrypt-failed]", {
+              roomId,
+              mediaType: mediaKind,
+              mediaMime: mediaFile.type || null,
+              plainByteLength: bytes.byteLength,
+              error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+            });
+            throw err;
+          }
+          record.mediaData = encrypted.data;
+          record.mediaIv = encrypted.iv;
+          record.mediaType = mediaKind;
+          // Persist the picked file's REAL type (image/heic, video/quicktime…)
+          // so the receiver rebuilds the Blob with a MIME that actually matches
+          // its bytes — otherwise WebKit fails to decode phone-originated media.
+          record.mediaMime = outgoingMediaMime(mediaFile.type, mediaKind);
+          record.msgType = mediaKind;
           record.expiresAt = Date.now() + MEDIA_EXPIRY_MS;
           record.viewOnce = viewOnce;
+          console.info("[send:media:sealed]", {
+            roomId,
+            messageId: dto.messageId,
+            mediaType: mediaKind,
+            mediaMime: record.mediaMime,
+            plainByteLength: bytes.byteLength,
+            encryptedBase64Length: encrypted.data.length,
+            expiresAt: record.expiresAt,
+            viewOnce: record.viewOnce,
+          });
         }
         try {
           await set(ref(db, `rooms/${roomId}/messages/${dto.messageId}`), record);
-          console.info("[send:v3:write-ok]", { roomId, messageId: dto.messageId });
+          // Safe metadata: proves which optional fields actually reached the
+          // record that was handed to Firebase (checklist: mediaData, mediaIv,
+          // mediaType, expiresAt, viewOnce + the new mediaMime).
+          console.info("[send:v3:write-ok]", {
+            roomId,
+            messageId: dto.messageId,
+            hasMediaData: !!record.mediaData,
+            hasMediaIv: !!record.mediaIv,
+            hasMediaType: !!record.mediaType,
+            hasMediaMime: !!record.mediaMime,
+            hasExpiresAt: typeof record.expiresAt === "number",
+            hasViewOnce: typeof record.viewOnce === "boolean",
+          });
         } catch (err) {
           console.warn("[send:v3:write-failed]", {
             roomId,
@@ -1259,14 +1425,27 @@ function ChatInner() {
       if (ghostLifetime) record.expiresAt = Date.now() + ghostLifetime;
       if (conversationMode === "BURST") record.expiresAt = Date.now() + 60_000;
       if (mediaFile) {
+        const mediaKind: "image" | "video" = mediaFile.type.startsWith("image/") ? "image" : "video";
         const bytes = new Uint8Array(await mediaFile.arrayBuffer());
         const { data, iv } = await encryptBytes(bytes, key);
         record.mediaData = data;
         record.mediaIv = iv;
-        record.mediaType = mediaFile.type.startsWith("image/") ? "image" : "video";
-        record.msgType = record.mediaType;
+        record.mediaType = mediaKind;
+        // Real MIME type of the picked file — same fidelity fix as V3 rooms so
+        // phone-originated HEIC/QuickTime media renders on every device.
+        record.mediaMime = outgoingMediaMime(mediaFile.type, mediaKind);
+        record.msgType = mediaKind;
         record.expiresAt = Date.now() + MEDIA_EXPIRY_MS;
         record.viewOnce = viewOnce;
+        console.info("[send:media:sealed]", {
+          roomId,
+          mediaType: mediaKind,
+          mediaMime: record.mediaMime,
+          plainByteLength: bytes.byteLength,
+          encryptedBase64Length: data.length,
+          expiresAt: record.expiresAt,
+          viewOnce: record.viewOnce,
+        });
       }
       await push(ref(db, `rooms/${roomId}/messages`), record);
       // Update chat metadata for chat list
