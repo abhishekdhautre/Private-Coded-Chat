@@ -726,27 +726,38 @@ export async function ensureRoomKeyEnvelopesForMembers(params: {
     console.info("[ensureRoomKeyEnvelopesForMembers:start]", { roomId, currentEpoch, myUid, otherUid });
     const { record } = await getOrCreateDeviceIdentity();
     const otherDevices = await getUserDevices(otherUid);
-    if (!otherDevices || otherDevices.length === 0) {
+    // Also cover the caller's own current devices: after a device rotation
+    // (new deviceId) the caller's own device has no envelope and nobody else
+    // provisions it. The caller possesses the epoch key, so wrapping for its
+    // own devices is safe and uses the same canonical epoch path.
+    const ownDevices = await getUserDevices(myUid).catch(() => []);
+    if ((!otherDevices || otherDevices.length === 0) && (!ownDevices || ownDevices.length === 0)) {
       console.info("[ensureRoomKeyEnvelopesForMembers:no_devices]", { roomId, otherUid });
       return;
     }
 
-    console.info("[ensureRoomKeyEnvelopesForMembers:devices_found]", { roomId, otherUid, deviceCount: otherDevices.length, deviceIds: otherDevices.map(d => d.payload.deviceId) });
+    console.info("[ensureRoomKeyEnvelopesForMembers:devices_found]", { roomId, otherUid, deviceCount: (otherDevices || []).length, deviceIds: (otherDevices || []).map(d => d.payload.deviceId) });
+    console.info("[ensureRoomKeyEnvelopesForMembers:own_devices_found]", { roomId, deviceCount: (ownDevices || []).length, deviceIds: (ownDevices || []).map(d => d.payload.deviceId) });
 
     const now = Date.now();
     const updates: Record<string, any> = {};
     let needsUpdate = false;
 
-    for (const dev of otherDevices) {
+    const targets: Array<{ uid: string; bundle: (typeof otherDevices)[number] }> = [
+      ...(otherDevices || []).map((dev) => ({ uid: otherUid, bundle: dev })),
+      ...(ownDevices || []).map((dev) => ({ uid: myUid, bundle: dev })),
+    ];
+
+    for (const { uid, bundle: dev } of targets) {
       const devId = dev.payload.deviceId;
       const existing = await getRoomKeyEnvelope(roomId, devId, currentEpoch);
       if (!existing) {
-        console.info("[ensureRoomKeyEnvelopesForMembers:creating_envelope]", { roomId, currentEpoch, recipientUid: otherUid, recipientDeviceId: devId });
+        console.info("[ensureRoomKeyEnvelopesForMembers:creating_envelope]", { roomId, currentEpoch, recipientUid: uid, recipientDeviceId: devId });
         const envelope = await wrapRoomKeyForDevice({
           roomId,
           epoch: currentEpoch,
           roomMasterKey,
-          recipientUid: otherUid,
+          recipientUid: uid,
           recipientDeviceId: devId,
           recipientExchangePublicKey: dev.payload.exchangePublicKey,
           senderUid: myUid,

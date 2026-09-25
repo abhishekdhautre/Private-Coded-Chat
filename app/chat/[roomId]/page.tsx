@@ -9,6 +9,7 @@ import { useCrypto } from "@/contexts/CryptoContext";
 import { db } from "@/lib/firebase";
 import { decrypt, decryptBytes, encrypt, encryptBytes } from "@/lib/crypto";
 import { encodeText, resolveDisplayKeyword } from "@/lib/cipher";
+import { isDuplicateDelivery } from "@/lib/messageDedupe";
 import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
 import { GifPicker } from "@/components/GifPicker";
@@ -396,6 +397,16 @@ function ChatInner() {
   const blobUrls = useRef<Map<string, string>>(new Map());
   // In-memory cache of decrypted messages — avoids re-decrypting on metadata-only changes
   const messageCache = useRef<Map<string, DecryptedMessage>>(new Map());
+  // UI-level idempotency: messageIds that already decrypted successfully AND
+  // were added to the UI for the lifetime of this chat session. A duplicate
+  // Firebase delivery of such an id is skipped BEFORE any crypto runs, so a
+  // normal redelivery is never misclassified as a cryptographic replay attack.
+  // Failed decryptions are deliberately never added (they stay retryable).
+  // Keyed by messageId only — never by sequenceNumber.
+  const decryptedOkIds = useRef<Set<string>>(new Set());
+  // Tracks which roomId the suppression set belongs to (the page component is
+  // reused across rooms without remounting, so the set must reset per room).
+  const dedupeRoomId = useRef<string>("");
   // Stable ref so the message listener never needs to re-subscribe when disappearing toggles
   const disappearingRef = useRef(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -604,6 +615,7 @@ function ChatInner() {
         } else {
           setMessages([]);
           messageCache.current.clear();
+          decryptedOkIds.current.clear();
           for (const u of blobUrls.current.values()) URL.revokeObjectURL(u);
           blobUrls.current.clear();
           router.replace(`/unlock?roomId=${encodeURIComponent(roomId)}`);
@@ -671,14 +683,30 @@ function ChatInner() {
   // Keep disappearingRef in sync so the message listener can read it without being in its deps
   useEffect(() => { disappearingRef.current = disappearing; }, [disappearing]);
 
-  // Subscribe to messages — incremental listeners, subscribed ONCE per room/user/key.
-  // `disappearing` intentionally excluded — read via disappearingRef to avoid re-subscribing.
+  // Subscribe to messages — incremental onChild* listeners, exactly ONE active
+  // subscription per room/user/key while mounted.
+  // - Deps use the stable `user?.uid` STRING, not the `user` object: Firebase
+  //   re-emits new User object identities (and any parent re-render does too),
+  //   and each re-subscription replays the FULL message history through
+  //   decryptRow. That replay is what produced repeated "Replay attack
+  //   detected" console errors for already-processed messageIds.
+  // - `disappearing` intentionally excluded — read via disappearingRef.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!key || !user) return;
+    // Stable string identity for everything below. (`user` itself is read here
+    // for narrowing only; the effect dep is `user?.uid` so object churn can't
+    // re-subscribe the listener.)
     const uid = user.uid;
     const cryptoKey = key; // capture non-null for use inside async callbacks
     const msgsPath = `rooms/${roomId}/messages`;
+
+    // New room (the page component is reused across rooms without remounting):
+    // reset UI-level suppression so the new room's messages always decrypt.
+    if (dedupeRoomId.current !== roomId) {
+      dedupeRoomId.current = roomId;
+      decryptedOkIds.current.clear();
+    }
 
     // Decrypt a single stored row, reuse cached blob URL if media payload unchanged
     async function decryptRow(id: string, row: StoredMessage): Promise<DecryptedMessage> {
@@ -689,14 +717,34 @@ function ChatInner() {
       }
       if (row.deletedFor?.[uid]) throw new Error("deleted-for-me");
 
-      let plaintext: string;
+      // Idempotency gate: this messageId already decrypted successfully and is
+      // in the UI cache with identical ciphertext/media — a duplicate delivery
+      // (listener re-attach, StrictMode remount). Return the cache WITHOUT
+      // touching crypto, so it is never misreported as a replay attack.
+      // Failures are never in decryptedOkIds, so they stay retryable; edits
+      // (changed ciphertext/media) always re-decrypt.
       const rowAny = row as any;
+      const preCached = messageCache.current.get(id);
+      if (
+        preCached &&
+        isDuplicateDelivery({
+          cached: preCached,
+          decryptedSuccessfully: decryptedOkIds.current.has(id),
+          row: rowAny,
+        })
+      ) {
+        return preCached;
+      }
+
+      let plaintext: string;
+      let decryptOk = false;
       if (rowAny.cryptoVersion === "v3_ratchet") {
         try {
           plaintext = await receiveMessageV3({
             message: rowAny,
             epochKey: cryptoKey,
           });
+          decryptOk = true;
         } catch (err) {
           // Safe diagnostics: identifiers and stage markers only, never secrets.
           console.warn("[chat:v3-decrypt-failed]", {
@@ -717,11 +765,17 @@ function ChatInner() {
             message: rowAny,
             roomMasterKey: cryptoKey,
           });
+          decryptOk = true;
         } catch {
           plaintext = "Unable to decrypt message.";
         }
       } else {
-        plaintext = await decrypt(row.ciphertext, row.iv, cryptoKey).catch(() => "Unable to decrypt message.");
+        try {
+          plaintext = await decrypt(row.ciphertext, row.iv, cryptoKey);
+          decryptOk = true;
+        } catch {
+          plaintext = "Unable to decrypt message.";
+        }
       }
 
       const cached = messageCache.current.get(id);
@@ -743,6 +797,9 @@ function ChatInner() {
 
       const msg: DecryptedMessage = { ...row, id, plaintext, mediaBlobUrl };
       messageCache.current.set(id, msg);
+      // Only successful decryptions suppress future duplicate deliveries.
+      // Failures stay out of this set so redelivery retries decryption.
+      if (decryptOk) decryptedOkIds.current.add(id);
       return msg;
     }
 
@@ -755,6 +812,15 @@ function ChatInner() {
     const unsubAdded = onChildAdded(ref(db, msgsPath), async (snap) => {
       const id = snap.key!;
       const row = snap.val() as StoredMessage;
+      // Already decrypted + rendered with identical payload: duplicate delivery
+      // from a listener re-attach. Ignore silently (no crypto, no console noise).
+      const already = messageCache.current.get(id);
+      if (
+        already &&
+        isDuplicateDelivery({ cached: already, decryptedSuccessfully: decryptedOkIds.current.has(id), row: row as any })
+      ) {
+        return;
+      }
       try {
         const msg = await decryptRow(id, row);
         markRead(msg);
@@ -777,6 +843,7 @@ function ChatInner() {
 
       if (row.deletedFor?.[uid]) {
         messageCache.current.delete(id);
+        decryptedOkIds.current.delete(id);
         const old = blobUrls.current.get(id);
         if (old) { URL.revokeObjectURL(old); blobUrls.current.delete(id); }
         setMessages((prev) => prev.filter((m) => m.id !== id));
@@ -797,6 +864,7 @@ function ChatInner() {
         setMessages((prev) => prev.map((m) => m.id === id ? msg : m));
       } catch {
         messageCache.current.delete(id);
+        decryptedOkIds.current.delete(id);
         setMessages((prev) => prev.filter((m) => m.id !== id));
       }
     });
@@ -804,6 +872,7 @@ function ChatInner() {
     const unsubRemoved = onChildRemoved(ref(db, msgsPath), (snap) => {
       const id = snap.key!;
       messageCache.current.delete(id);
+      decryptedOkIds.current.delete(id);
       const old = blobUrls.current.get(id);
       if (old) { URL.revokeObjectURL(old); blobUrls.current.delete(id); }
       setMessages((prev) => prev.filter((m) => m.id !== id));
@@ -814,9 +883,11 @@ function ChatInner() {
       unsubChanged();
       unsubRemoved();
     };
-  // `disappearing` deliberately omitted — read via disappearingRef
+  // `disappearing` deliberately omitted — read via disappearingRef.
+  // `user` deliberately omitted in favour of the stable `user?.uid` string —
+  // the User object identity churns and must not re-subscribe the listener.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, user, roomId]);
+  }, [key, roomId, user?.uid]);
 
   // Typing presence — debounced. Does NOT re-subscribe on every keystroke.
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -887,6 +958,7 @@ function ChatInner() {
           const u = blobUrls.current.get(m.id);
           if (u) { URL.revokeObjectURL(u); blobUrls.current.delete(m.id); }
           messageCache.current.delete(m.id);
+          decryptedOkIds.current.delete(m.id);
         });
         return prev.filter((m) => !m.expiresAt || m.expiresAt > now);
       });
@@ -1142,6 +1214,20 @@ function ChatInner() {
         if (replyingTo) record.replyTo = replyingTo.id;
         if (ghostLifetime) record.expiresAt = Date.now() + ghostLifetime;
         if (conversationMode === "BURST") record.expiresAt = Date.now() + 60_000;
+        if (mediaFile) {
+          // Same encrypted-media pipeline as V1 rooms: media bytes are sealed
+          // with the room key both sides already hold, and the recipient's
+          // decryptRow() already decrypts mediaData/mediaIv with that key.
+          // Previously this branch silently discarded the attachment.
+          const bytes = new Uint8Array(await mediaFile.arrayBuffer());
+          const { data, iv } = await encryptBytes(bytes, key);
+          record.mediaData = data;
+          record.mediaIv = iv;
+          record.mediaType = mediaFile.type.startsWith("image/") ? "image" : "video";
+          record.msgType = record.mediaType;
+          record.expiresAt = Date.now() + MEDIA_EXPIRY_MS;
+          record.viewOnce = viewOnce;
+        }
         try {
           await set(ref(db, `rooms/${roomId}/messages/${dto.messageId}`), record);
           console.info("[send:v3:write-ok]", { roomId, messageId: dto.messageId });

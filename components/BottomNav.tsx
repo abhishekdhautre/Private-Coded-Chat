@@ -4,13 +4,14 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeChatList, subscribeIncomingRequests, subscribeNotifications } from "@/lib/userService";
+import { Icon, type IconName } from "@/components/Icon";
 
-const NAV = [
-  { href: "/home", icon: "💬", label: "Chats" },
-  { href: "/search", icon: "🔎", label: "Search" },
-  { href: "/friends", icon: "👥", label: "Friends" },
-  { href: "/notifications", icon: "🔔", label: "Alerts" },
-  { href: "/profile", icon: "👤", label: "Profile" },
+const NAV: { href: string; icon: IconName; label: string }[] = [
+  { href: "/home", icon: "chat", label: "Chats" },
+  { href: "/search", icon: "search", label: "Search" },
+  { href: "/friends", icon: "users", label: "Friends" },
+  { href: "/notifications", icon: "bell", label: "Alerts" },
+  { href: "/profile", icon: "user", label: "Profile" },
 ];
 
 export function BottomNav() {
@@ -55,7 +56,7 @@ export function BottomNav() {
             aria-label={label}
           >
             <span className="bottom-nav-icon-wrap">
-              <span className="bottom-nav-icon">{icon}</span>
+              <span className="bottom-nav-icon"><Icon name={icon} size={21} /></span>
               {badge > 0 && (
                 <span className="bottom-nav-badge" aria-label={`${badge} unread`}>
                   {badge > 99 ? "99+" : badge}

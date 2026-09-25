@@ -28,6 +28,13 @@ function UnlockInner() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [isV2, setIsV2] = useState(false);
+  // Whether the room-meta version check has completed. The V1 passphrase form
+  // must only render after meta positively confirmed a non-V2 room — never
+  // while the check is pending or when the read itself failed. Otherwise a
+  // v2_e2ee room briefly (or permanently, on flaky networks) shows the V1
+  // passphrase screen it must never require.
+  const [metaChecked, setMetaChecked] = useState(false);
+  const [metaError, setMetaError] = useState(false);
 
   useEffect(() => {
     if (key && roomId) {
@@ -40,7 +47,10 @@ function UnlockInner() {
     (async () => {
       try {
         const metaSnap = await get(ref(db, `rooms/${roomId}/meta`));
-        if (!metaSnap.exists()) return;
+        if (!metaSnap.exists()) {
+          if (mounted) setMetaChecked(true);
+          return;
+        }
         const meta = metaSnap.val();
         if (meta?.version === "v2_e2ee") {
           if (mounted) {
@@ -62,8 +72,14 @@ function UnlockInner() {
             if (mounted) setBusy(false);
           }
         }
+        if (mounted) setMetaChecked(true);
       } catch {
-        // Network or permission check failure — fallback to manual if applicable
+        // Network or permission failure: do NOT fall through to the V1 form.
+        // Surface a retry instead so a V2 room never asks for a passphrase.
+        if (mounted) {
+          setMetaError(true);
+          setMetaChecked(true);
+        }
       }
     })();
 
@@ -122,6 +138,51 @@ function UnlockInner() {
           ) : (
             <p className="lock-copy">Opening encrypted conversation…</p>
           )}
+          <div className="lock-brand">
+            <BrandMark size={22} withWordmark={false} />
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // Room type not yet determined, or the settings read failed: never show the
+  // V1 passphrase form here. A v2_e2ee room must never ask for a passphrase.
+  if (!metaChecked) {
+    return (
+      <main className="lock-page">
+        <div className="lock-card">
+          <div className="lock-mark">
+            <Icon name="lock" size={26} />
+          </div>
+          <h1 className="lock-title">Checking room…</h1>
+          <p className="lock-copy">Loading this conversation&apos;s encryption settings.</p>
+          <div className="lock-brand">
+            <BrandMark size={22} withWordmark={false} />
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (metaError) {
+    return (
+      <main className="lock-page">
+        <div className="lock-card">
+          <div className="lock-mark">
+            <Icon name="lock" size={26} />
+          </div>
+          <h1 className="lock-title">Couldn&apos;t load room</h1>
+          <p className="lock-copy" role="alert">
+            The room&apos;s encryption settings could not be read. Check your connection and try again.
+          </p>
+          <button
+            type="button"
+            className="action-btn action-btn-primary"
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </button>
           <div className="lock-brand">
             <BrandMark size={22} withWordmark={false} />
           </div>
