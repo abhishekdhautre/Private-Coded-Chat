@@ -1112,6 +1112,18 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 .lightbox img, .lightbox video { max-width: 100%; max-height: 80dvh; border-radius: var(--r-md); object-fit: contain; }
 .lightbox-bar { display: flex; align-items: center; gap: 0.6rem; color: var(--text-secondary); font-size: 0.72rem; }
 
+/* Snapchat-style realistic privacy: a web page cannot block OS screenshots,
+   so this only raises the bar for casual saving — no text selection or
+   callout on decrypted media surfaces, no drag-to-save. */
+.sensitive-media, .sensitive-media img, .sensitive-media video {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Honest one-line privacy note under disappearing / view-once media. */
+.privacy-note { display: block; margin-top: 0.2rem; font-size: 0.62rem; line-height: 1.35; color: var(--text-muted); }
+
 .chat-toast {
   position: fixed;
   left: 50%;

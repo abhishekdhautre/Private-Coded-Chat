@@ -12,6 +12,20 @@ import { encodeText, resolveDisplayKeyword } from "@/lib/cipher";
 import { isDuplicateDelivery } from "@/lib/messageDedupe";
 import { singleFlight } from "@/lib/singleFlight";
 import type { InFlightRun } from "@/lib/singleFlight";
+import { mergeIncomingMessage, partitionExpired } from "@/lib/chatMerge";
+import {
+  loadNotifyMuted,
+  saveNotifyMuted,
+  loadBrowserNotifyEnabled,
+  saveBrowserNotifyEnabled,
+  shouldNotifyMessage,
+  unlockNotifyAudio,
+  playNotifyTone,
+  canUseBrowserNotifications,
+  browserNotificationPermission,
+  requestBrowserNotificationPermission,
+  showChatNotification,
+} from "@/lib/notify";
 import { isMediaReady, mediaBlobMime, outgoingMediaMime } from "@/lib/mediaMime";
 import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
@@ -221,7 +235,7 @@ function MessageBubble({
 
           {/* Media (image/video) */}
           {isMedia && m.mediaBlobUrl && !mediaDecodeFailed && (
-            <div className="mb-2">
+            <div className="mb-2 sensitive-media">
               {m.mediaType === "image" ? (
                 <img
                   src={m.mediaBlobUrl}
@@ -247,6 +261,7 @@ function MessageBubble({
                   controls
                   className="max-w-[260px] rounded-xl"
                   controlsList="nodownload"
+                  draggable={false}
                   onContextMenu={(e) => e.preventDefault()}
                   onError={() => {
                     console.warn("[chat:media:decode-failed]", {
@@ -280,6 +295,11 @@ function MessageBubble({
               )}
               {isMedia && m.expiresAt && m.expiresAt > Date.now() && <MediaTimer expiresAt={m.expiresAt} />}
               {isMedia && m.expiresAt && <span>· disappears</span>}
+              {/* Honest privacy note: a web page cannot block OS screenshots —
+                  this states the limitation instead of pretending otherwise. */}
+              {isMedia && (m.expiresAt || m.viewOnce) && (
+                <span className="privacy-note">For your privacy, screenshots may not be preventable on this device.</span>
+              )}
               {m.editedAt && <span>edited</span>}
               {m.pinned && <span>· pinned</span>}
               {m.readBy && Object.keys(m.readBy).length > 1 && <span>· read</span>}
@@ -403,6 +423,8 @@ function ChatInner() {
   const [typing, setTyping] = useState(false);
   const [otherTyping, setOtherTyping] = useState(false);
   const [unread, setUnread] = useState(0);
+  const [notifyMuted, setNotifyMuted] = useState(false);
+  const [browserNotifyOn, setBrowserNotifyOn] = useState(false);
   const [disappearingLoading, setDisappearingLoading] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
   const [showGifs, setShowGifs] = useState(false);
@@ -443,9 +465,9 @@ function ChatInner() {
   // concurrent receives for one id advance that sender's ratchet chain twice
   // and let the LOSING attempt overwrite an already-decrypted bubble with
   // "Unable to decrypt message." — both callers now await the same promise.
-  const inFlightDecrypts = useRef<Map<string, InFlightRun<DecryptedMessage>>>(
-    new Map()
-  );
+  const inFlightDecrypts = useRef<
+    Map<string, InFlightRun<{ msg: DecryptedMessage; decryptOk: boolean; fresh: boolean }>>
+  >(new Map());
   // Plaintext of messages THIS device has sent in the current session, recorded
   // just before the row is written to Firebase: the plaintext as sealed, plus
   // every row field that participates in the V3 signature / AAD (ciphertext, iv,
@@ -482,6 +504,23 @@ function ChatInner() {
   });
   // Stable ref so the message listener never needs to re-subscribe when disappearing toggles
   const disappearingRef = useRef(false);
+  // Realtime + notification refs. The listener effect subscribes once per
+  // (key, roomId, uid) and these mirrors let its callbacks read fresh UI state
+  // without re-subscribing.
+  // Wall-clock moment THIS subscription attached. Rows older than this are the
+  // listener's initial history replay (never notification-worthy); rows at or
+  // newer are live arrivals. Reset on every (re)subscribe.
+  const subscribedAtRef = useRef(0);
+  // MessageIds that already triggered an incoming-message alert this session —
+  // guarantees one alert per message even when added + changed handlers share
+  // a single-flight decrypt result.
+  const notifiedIds = useRef<Set<string>>(new Set());
+  // Mirrors of component state for the realtime callbacks (see mirror effect).
+  const sendingRef = useRef(false);
+  const composingRef = useRef(false);
+  const notifyMutedRef = useRef(false);
+  const browserNotifyRef = useRef(false);
+  const roomLabelRef = useRef("Private room");
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
   // Anchors for scroll-to-message from the search / pinned panels
@@ -756,6 +795,35 @@ function ChatInner() {
   // Keep disappearingRef in sync so the message listener can read it without being in its deps
   useEffect(() => { disappearingRef.current = disappearing; }, [disappearing]);
 
+  // Load notification preferences once (local only — never message data).
+  useEffect(() => {
+    setNotifyMuted(loadNotifyMuted());
+    setBrowserNotifyOn(loadBrowserNotifyEnabled());
+  }, []);
+
+  // Unlock the Web Audio notification tone on first user interaction so later
+  // incoming-message sounds comply with browser autoplay policies.
+  useEffect(() => {
+    window.addEventListener("pointerdown", unlockNotifyAudio);
+    window.addEventListener("keydown", unlockNotifyAudio);
+    window.addEventListener("touchstart", unlockNotifyAudio);
+    return () => {
+      window.removeEventListener("pointerdown", unlockNotifyAudio);
+      window.removeEventListener("keydown", unlockNotifyAudio);
+      window.removeEventListener("touchstart", unlockNotifyAudio);
+    };
+  }, []);
+
+  // Mirror render state into refs so the realtime listener callbacks (which
+  // must NOT re-subscribe on every keystroke) always read fresh values.
+  useEffect(() => {
+    sendingRef.current = sending;
+    composingRef.current = input.trim().length > 0;
+    notifyMutedRef.current = notifyMuted;
+    browserNotifyRef.current = browserNotifyOn;
+    roomLabelRef.current = friendProfile?.displayName ?? "Private room";
+  });
+
   // Subscribe to messages — incremental onChild* listeners, exactly ONE active
   // subscription per room/user/key while mounted.
   // - Deps use the stable `user?.uid` STRING, not the `user` object: Firebase
@@ -780,13 +848,24 @@ function ChatInner() {
       dedupeRoomId.current = roomId;
       decryptedOkIds.current.clear();
       localEchoes.current.clear();
+      notifiedIds.current.clear();
       sendSeqFloor.current = { roomId: "", epoch: 0, value: 0 };
     }
+
+    // Cutover between history replay and live arrivals for THIS subscription.
+    // Rows predating this instant are the listener's initial replay and must
+    // never fire incoming-message alerts; rows at/after it are live.
+    subscribedAtRef.current = Date.now();
+    // Safe diagnostics: identifiers only — proves exactly one active realtime
+    // subscription per open room (setup runs once per key/room/uid).
+    console.info("[chat:realtime:subscribed]", { roomId, uid });
 
     // Decrypt a single stored row. Concurrent deliveries of the SAME row (see
     // inFlightDecrypts) are coalesced onto one in-flight run so the receive path
     // — and with it the sender's ratchet chain — is never executed twice at once.
-    function decryptRow(id: string, row: StoredMessage): Promise<DecryptedMessage> {
+    // Returns whether this call actually ran the decrypt pipeline (`fresh`):
+    // a cached/coalesced result is a duplicate delivery for notification purposes.
+    function decryptRow(id: string, row: StoredMessage): Promise<{ msg: DecryptedMessage; decryptOk: boolean; fresh: boolean }> {
       const rowAny = row as any;
       // Payload identity: a row whose ciphertext or media payload differs is a
       // genuine edit and must re-decrypt instead of sharing the running result.
@@ -797,7 +876,7 @@ function ChatInner() {
     }
 
     // Decrypt a single stored row, reuse cached blob URL if media payload unchanged
-    async function decryptRowPayload(id: string, row: StoredMessage): Promise<DecryptedMessage> {
+    async function decryptRowPayload(id: string, row: StoredMessage): Promise<{ msg: DecryptedMessage; decryptOk: boolean; fresh: boolean }> {
       const rowAny = row as any;
 
       // ── Sequence floor (metadata only, runs before any crypto) ────────────
@@ -859,7 +938,9 @@ function ChatInner() {
           row: rowAny,
         })
       ) {
-        return preCached;
+        // Served from the already-decrypted UI cache: a duplicate delivery, not
+        // a fresh decrypt — callers must not treat this as a new arrival.
+        return { msg: preCached, decryptOk: false, fresh: false };
       }
 
       let plaintext: string;
@@ -986,7 +1067,7 @@ function ChatInner() {
       // failure would be cached as "processed" and the photo could never be
       // rendered on a later redelivery.
       if (decryptOk && isMediaReady(row, mediaBlobUrl)) decryptedOkIds.current.add(id);
-      return msg;
+      return { msg, decryptOk, fresh: true };
     }
 
     // Only write readBy if this user hasn't already marked it
@@ -998,6 +1079,14 @@ function ChatInner() {
     const unsubAdded = onChildAdded(ref(db, msgsPath), async (snap) => {
       const id = snap.key!;
       const row = snap.val() as StoredMessage;
+      const rowAnyDiag = row as any;
+      // Safe diagnostics: delivery identifiers only — never content or keys.
+      console.info("[chat:realtime:child-added]", {
+        messageId: id,
+        senderUid: rowAnyDiag.senderUid ?? rowAnyDiag.senderId ?? null,
+        timestamp: row.timestamp ?? null,
+        hasMedia: !!row.mediaData,
+      });
       // Already decrypted + rendered with identical payload: duplicate delivery
       // from a listener re-attach. Ignore silently (no crypto, no console noise).
       // A row whose media never produced an object URL is not "processed", so
@@ -1014,7 +1103,7 @@ function ChatInner() {
         return;
       }
       try {
-        const msg = await decryptRow(id, row);
+        const { msg, decryptOk, fresh } = await decryptRow(id, row);
         markRead(msg);
         if (disappearingRef.current) {
           update(ref(db), { [`rooms/${roomId}/meta/disappearingViewedAt/${uid}`]: Date.now() }).catch(() => {});
@@ -1032,12 +1121,74 @@ function ChatInner() {
           });
         }
         setMessages((prev) => {
-          if (prev.some((m) => m.id === id)) return prev;
+          // Pure merge: insert-or-ignore by messageId, timestamp-sorted. The
+          // same reference comes back for duplicates, so React bails out and
+          // no duplicate bubble is ever created — whether this row arrived as
+          // history replay, live realtime, or both interleaved.
+          const next = mergeIncomingMessage(prev, msg);
+          if (next === prev) return prev;
           if (document.visibilityState !== "visible") setUnread((c) => c + 1);
-          const next = [...prev, msg];
-          next.sort((a, b) => a.timestamp - b.timestamp);
           return next;
         });
+        console.info("[chat:realtime:state-add]", {
+          messageId: id,
+          messageCount: messageCache.current.size,
+        });
+        // Incoming-message alerts: remote + decrypt-ok + live + first delivery
+        // only. History replay (predates this subscription), own echoes,
+        // duplicates and failures stay silent.
+        const isHistorical = !(
+          typeof row.timestamp === "number" &&
+          row.timestamp >= subscribedAtRef.current
+        );
+        if (fresh && !isHistorical) {
+          const decision = shouldNotifyMessage({
+            isOwnMessage: msg.senderId === uid,
+            decryptOk,
+            isDuplicateDelivery: notifiedIds.current.has(id),
+            isHistorical: false,
+            muted: notifyMutedRef.current,
+            isSending: sendingRef.current || composingRef.current,
+            alreadyNotified: false,
+          });
+          let played = false;
+          if (decision.notify) {
+            notifiedIds.current.add(id);
+            played = playNotifyTone();
+            try {
+              navigator.vibrate?.(60);
+            } catch {
+              // Haptics unavailable — sound already handled above.
+            }
+            // Browser notification only when the chat isn't visible, only when
+            // the user opted in, and only with content-free text (never the
+            // message body). Clicking focuses/opens the room.
+            if (
+              browserNotifyRef.current &&
+              browserNotificationPermission() === "granted" &&
+              typeof document !== "undefined" &&
+              document.visibilityState !== "visible"
+            ) {
+              showChatNotification({
+                roomId,
+                onOpen: (rid) => {
+                  try {
+                    window.focus();
+                  } catch {
+                    // Focusing is best-effort.
+                  }
+                  router.push(`/chat/${encodeURIComponent(rid)}`);
+                },
+              });
+            }
+          }
+          // Safe diagnostics: identifiers and outcome only — never content.
+          console.info("[chat:notification]", {
+            messageId: id,
+            played,
+            reason: decision.reason,
+          });
+        }
       } catch (err) {
         // Never swallow silently: distinguish the intentional skips
         // (expired / deleted-for-me) from anything unexpected.
@@ -1083,7 +1234,7 @@ function ChatInner() {
       }
 
       try {
-        const msg = await decryptRow(id, row);
+        const { msg } = await decryptRow(id, row);
         setMessages((prev) => prev.map((m) => m.id === id ? msg : m));
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
@@ -1111,6 +1262,9 @@ function ChatInner() {
     });
 
     return () => {
+      // Safe diagnostics: cleanup runs only when the room/user/key genuinely
+      // changes or the component unmounts — never on renders or keystrokes.
+      console.info("[chat:realtime:unsubscribed]", { roomId });
       unsubAdded();
       unsubChanged();
       unsubRemoved();
@@ -1179,20 +1333,24 @@ function ChatInner() {
   // Auto-scroll
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
 
-  // Client-side expiry sweep
+  // Client-side expiry sweep (disappearing / 30s media). This interval only
+  // enforces expiry of rows ALREADY in state — it never fetches messages and
+  // is not a realtime mechanism; realtime delivery stays purely event-driven.
   useEffect(() => {
     const id = setInterval(() => {
       const now = Date.now();
       setMessages((prev) => {
-        const expired = prev.filter((m) => m.expiresAt && m.expiresAt <= now);
+        const { kept, expired } = partitionExpired(prev, now);
         expired.forEach((m) => {
           remove(ref(db, `rooms/${roomId}/messages/${m.id}`)).catch(() => {});
+          // Revoke the decrypted object URL so expired media bytes are
+          // released and can never be rendered again from a stale URL.
           const u = blobUrls.current.get(m.id);
           if (u) { URL.revokeObjectURL(u); blobUrls.current.delete(m.id); }
           messageCache.current.delete(m.id);
           decryptedOkIds.current.delete(m.id);
         });
-        return prev.filter((m) => !m.expiresAt || m.expiresAt > now);
+        return kept;
       });
     }, 1000);
     return () => clearInterval(id);
@@ -1805,6 +1963,81 @@ function ChatInner() {
                   )}
                 </div>
 
+                {/* ── NOTIFICATIONS ── */}
+                <div className="chat-menu-section" role="group" aria-label="Notifications">
+                  <p className="chat-menu-section-label">Notifications</p>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="chat-menu-btn"
+                    aria-pressed={!notifyMuted}
+                    onClick={() => {
+                      const next = !notifyMuted;
+                      setNotifyMuted(next);
+                      saveNotifyMuted(next);
+                      showToast(next ? "Message sounds off" : "Message sounds on");
+                    }}
+                  >
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name={notifyMuted ? "mute" : "muteFilled"} size={18} /></span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Message sounds</span>
+                      <span className="chat-menu-hint">
+                        {notifyMuted ? "Off — new messages stay silent" : "On — plays once for new messages"}
+                      </span>
+                    </span>
+                    <span className="chat-menu-tail">{notifyMuted ? "Off" : "On"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="chat-menu-btn"
+                    aria-pressed={browserNotifyOn}
+                    onClick={async () => {
+                      // Permission is requested ONLY here, from this intentional
+                      // tap — never on page load.
+                      if (!canUseBrowserNotifications()) {
+                        showToast("Browser notifications not supported here");
+                        return;
+                      }
+                      if (browserNotificationPermission() === "denied") {
+                        showToast("Notifications blocked — allow them in browser settings");
+                        return;
+                      }
+                      if (!browserNotifyOn) {
+                        const perm = await requestBrowserNotificationPermission();
+                        if (perm !== "granted") {
+                          showToast("Notification permission not granted");
+                          return;
+                        }
+                        setBrowserNotifyOn(true);
+                        saveBrowserNotifyEnabled(true);
+                        showToast("Browser notifications on");
+                      } else {
+                        setBrowserNotifyOn(false);
+                        saveBrowserNotifyEnabled(false);
+                        showToast("Browser notifications off");
+                      }
+                    }}
+                  >
+                    <span className="chat-menu-icon" aria-hidden="true"><Icon name="bell" size={18} /></span>
+                    <span className="chat-menu-text">
+                      <span className="chat-menu-label">Notifications</span>
+                      <span className="chat-menu-hint">
+                        {!canUseBrowserNotifications()
+                          ? "Not supported in this browser"
+                          : browserNotificationPermission() === "denied"
+                            ? "Blocked in browser settings"
+                            : browserNotifyOn
+                              ? "On — alerts for new messages when hidden"
+                              : "Off — alert when the chat is hidden"}
+                      </span>
+                    </span>
+                    <span className="chat-menu-tail">{browserNotifyOn ? "On" : "Off"}</span>
+                  </button>
+                </div>
+
                 {/* ── PRIVACY ── */}
                 <div className="chat-menu-section" role="group" aria-label="Privacy">
                   <p className="chat-menu-section-label">Privacy</p>
@@ -2117,7 +2350,13 @@ function ChatInner() {
                                 onClick={() => openMediaViewer(m)}
                                 aria-label={`View image from ${m.senderId === user?.uid ? "you" : "this chat"}`}
                               >
-                                <img src={m.mediaBlobUrl ?? ""} alt="" loading="lazy" />
+                                <img
+                                  src={m.mediaBlobUrl ?? ""}
+                                  alt=""
+                                  loading="lazy"
+                                  draggable={false}
+                                  onContextMenu={(e) => e.preventDefault()}
+                                />
                                 {m.viewOnce && <span className="media-tile-badge">View once</span>}
                               </button>
                             ))}
@@ -2136,7 +2375,13 @@ function ChatInner() {
                                 onClick={() => openMediaViewer(m)}
                                 aria-label={`Play video from ${m.senderId === user?.uid ? "you" : "this chat"}`}
                               >
-                                <video src={m.mediaBlobUrl ?? ""} muted preload="metadata" />
+                                <video
+                                  src={m.mediaBlobUrl ?? ""}
+                                  muted
+                                  preload="metadata"
+                                  draggable={false}
+                                  onContextMenu={(e) => e.preventDefault()}
+                                />
                                 {m.viewOnce && <span className="media-tile-badge">View once</span>}
                               </button>
                             ))}
@@ -2294,19 +2539,35 @@ function ChatInner() {
       {/* ── Media lightbox ── */}
       {lightbox && (
         <div
-          className="lightbox"
+          className="lightbox sensitive-media"
           role="dialog"
           aria-modal="true"
           aria-label="Media viewer"
           onPointerDown={() => setLightbox(null)}
+          onContextMenu={(e) => e.preventDefault()}
         >
           {lightbox.kind === "video" ? (
-            <video src={lightbox.url} controls autoPlay playsInline onPointerDown={(e) => e.stopPropagation()} />
+            <video
+              src={lightbox.url}
+              controls
+              autoPlay
+              playsInline
+              controlsList="nodownload"
+              draggable={false}
+              onPointerDown={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+            />
           ) : (
-            <img src={lightbox.url} alt="Shared media" onPointerDown={(e) => e.stopPropagation()} />
+            <img
+              src={lightbox.url}
+              alt="Shared media"
+              draggable={false}
+              onPointerDown={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+            />
           )}
           <div className="lightbox-bar" onPointerDown={(e) => e.stopPropagation()}>
-            {lightbox.viewOnce && <span>🔒 View once — already consumed</span>}
+            {lightbox.viewOnce && <span>🔒 View once — already consumed · screenshots may not be preventable on this device</span>}
             <button type="button" className="sheet-close" onClick={() => setLightbox(null)} aria-label="Close media viewer">×</button>
           </div>
         </div>
