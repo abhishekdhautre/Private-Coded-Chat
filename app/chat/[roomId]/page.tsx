@@ -10,6 +10,8 @@ import { db } from "@/lib/firebase";
 import { decrypt, decryptBytes, encrypt, encryptBytes } from "@/lib/crypto";
 import { encodeText, resolveDisplayKeyword } from "@/lib/cipher";
 import { isDuplicateDelivery } from "@/lib/messageDedupe";
+import { singleFlight } from "@/lib/singleFlight";
+import type { InFlightRun } from "@/lib/singleFlight";
 import { isMediaReady, mediaBlobMime, outgoingMediaMime } from "@/lib/mediaMime";
 import { ReactionPicker } from "@/components/ReactionPicker";
 import { StickerPicker } from "@/components/StickerPicker";
@@ -434,6 +436,50 @@ function ChatInner() {
   // Tracks which roomId the suppression set belongs to (the page component is
   // reused across rooms without remounting, so the set must reset per room).
   const dedupeRoomId = useRef<string>("");
+  // Single-flight guard for decryptRow(): at most ONE receive path per
+  // messageId at a time. Firebase can deliver the same row twice while the
+  // first decrypt is still in flight (child_added racing a peer's read-receipt
+  // child_changed, or a listener re-subscription replaying history). Two
+  // concurrent receives for one id advance that sender's ratchet chain twice
+  // and let the LOSING attempt overwrite an already-decrypted bubble with
+  // "Unable to decrypt message." — both callers now await the same promise.
+  const inFlightDecrypts = useRef<Map<string, InFlightRun<DecryptedMessage>>>(
+    new Map()
+  );
+  // Plaintext of messages THIS device has sent in the current session, recorded
+  // just before the row is written to Firebase: the plaintext as sealed, plus
+  // every row field that participates in the V3 signature / AAD (ciphertext, iv,
+  // sequenceNumber, timestamp) so the echo can be matched against the row.
+  // The sender's own local echo therefore renders from the send result instead
+  // of re-entering the receive path (a redundant sender-bundle fetch plus a
+  // second ratchet step). The stored row is untouched: it stays a normal signed,
+  // sequenced V3 message that the other device decrypts through the full
+  // verification path. A row that differs in any checked byte falls through to
+  // it, where full verification applies.
+  const localEchoes = useRef<
+    Map<
+      string,
+      {
+        plaintext: string;
+        ciphertext: string;
+        iv: string;
+        sequenceNumber: number;
+        timestamp: number;
+      }
+    >
+  >(new Map());
+  // Highest V3 sequence number this device has already used in the current
+  // (roomId, epoch), taken from row METADATA the moment a row arrives — before
+  // any crypto runs. The ratchet chain itself only lives in memory, so after a
+  // page load / mobile tab eviction the send chain must be resumed past this
+  // floor instead of restarting at 0: reusing a sequence number is rejected by
+  // every receiver ("already passed"), including our own Firebase echo.
+  // See ensureRatchetSequenceFloor() in lib/ratchetV2.ts.
+  const sendSeqFloor = useRef<{ roomId: string; epoch: number; value: number }>({
+    roomId: "",
+    epoch: 0,
+    value: 0,
+  });
   // Stable ref so the message listener never needs to re-subscribe when disappearing toggles
   const disappearingRef = useRef(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -733,10 +779,50 @@ function ChatInner() {
     if (dedupeRoomId.current !== roomId) {
       dedupeRoomId.current = roomId;
       decryptedOkIds.current.clear();
+      localEchoes.current.clear();
+      sendSeqFloor.current = { roomId: "", epoch: 0, value: 0 };
+    }
+
+    // Decrypt a single stored row. Concurrent deliveries of the SAME row (see
+    // inFlightDecrypts) are coalesced onto one in-flight run so the receive path
+    // — and with it the sender's ratchet chain — is never executed twice at once.
+    function decryptRow(id: string, row: StoredMessage): Promise<DecryptedMessage> {
+      const rowAny = row as any;
+      // Payload identity: a row whose ciphertext or media payload differs is a
+      // genuine edit and must re-decrypt instead of sharing the running result.
+      const fingerprint = `${rowAny.ciphertext ?? ""}|${rowAny.mediaData ?? ""}`;
+      return singleFlight(inFlightDecrypts.current, id, fingerprint, () =>
+        decryptRowPayload(id, row)
+      );
     }
 
     // Decrypt a single stored row, reuse cached blob URL if media payload unchanged
-    async function decryptRow(id: string, row: StoredMessage): Promise<DecryptedMessage> {
+    async function decryptRowPayload(id: string, row: StoredMessage): Promise<DecryptedMessage> {
+      const rowAny = row as any;
+
+      // ── Sequence floor (metadata only, runs before any crypto) ────────────
+      // Count this device's OWN highest V3 sequence number from the row as
+      // soon as it is delivered, so a send issued while the listener is still
+      // replaying history already resumes above it. Rows from other devices
+      // have their own chain; rows from another epoch have their own key space.
+      if (
+        rowAny.cryptoVersion === "v3_ratchet" &&
+        rowAny.senderId === uid &&
+        rowAny.senderDeviceId === deviceId &&
+        typeof rowAny.sequenceNumber === "number" &&
+        Number.isFinite(rowAny.sequenceNumber)
+      ) {
+        const rowEpoch = typeof rowAny.epoch === "number" ? rowAny.epoch : 1;
+        const current = sendSeqFloor.current;
+        const sameScope = current.roomId === roomId && current.epoch === rowEpoch;
+        const base = sameScope ? current.value : 0;
+        sendSeqFloor.current = {
+          roomId,
+          epoch: rowEpoch,
+          value: Math.max(base, rowAny.sequenceNumber + 1),
+        };
+      }
+
       const now = Date.now();
       if (row.expiresAt && row.expiresAt <= now) {
         // Safe diagnostics: identifiers/timings only — tells us whether the row
@@ -762,7 +848,6 @@ function ChatInner() {
       // (changed ciphertext/media) always re-decrypt. A row whose media never
       // produced an object URL is also NOT considered processed, so the media
       // pipeline is retried on redelivery instead of being stuck forever.
-      const rowAny = row as any;
       const preCached = messageCache.current.get(id);
       if (
         preCached &&
@@ -779,7 +864,38 @@ function ChatInner() {
 
       let plaintext: string;
       let decryptOk = false;
-      if (rowAny.cryptoVersion === "v3_ratchet") {
+      // ── Local echo: this device sealed this exact message moments ago ─────
+      // The plaintext we just encrypted is still in memory, so the sender's own
+      // Firebase echo renders from the SEND RESULT instead of running the
+      // receive path again (a redundant sender-bundle fetch plus a second
+      // ratchet step on a row we already know). Nothing is bypassed for anyone
+      // else: the stored row stays an ordinary signed + sequenced V3 message and
+      // the PEER still verifies signature, sequence, replay and the AES-GCM tag
+      // before rendering it. The row must match what we sealed on every field
+      // covered by the signature and AAD — if any of it differs we fall through
+      // to the normal path, where full verification applies.
+      const echo =
+        typeof rowAny.messageId === "string" &&
+        rowAny.senderId === uid &&
+        rowAny.senderDeviceId === deviceId
+          ? localEchoes.current.get(rowAny.messageId)
+          : undefined;
+      if (
+        echo &&
+        echo.ciphertext === rowAny.ciphertext &&
+        echo.iv === rowAny.iv &&
+        echo.sequenceNumber === rowAny.sequenceNumber &&
+        echo.timestamp === rowAny.timestamp
+      ) {
+        console.info("[chat:v3:local-echo]", {
+          messageId: rowAny.messageId,
+          epoch: rowAny.epoch ?? null,
+          sequenceNumber: rowAny.sequenceNumber ?? null,
+          senderDeviceId: rowAny.senderDeviceId,
+        });
+        plaintext = echo.plaintext;
+        decryptOk = true;
+      } else if (rowAny.cryptoVersion === "v3_ratchet") {
         try {
           plaintext = await receiveMessageV3({
             message: rowAny,
@@ -1292,15 +1408,25 @@ function ChatInner() {
     try {
       if (isV2 && identityPrivateKey && deviceId) {
         let dto: MessageDTOV3;
+        // Sequence floor from this device's own room rows (metadata only).
+        // Only trusted when it belongs to the room/epoch we are sending into;
+        // otherwise 0 — the ratchet chain key space is per (room, epoch).
+        const floor = sendSeqFloor.current;
+        const minSequenceNumber =
+          floor.roomId === roomId && floor.epoch === (epoch || 1) ? floor.value : 0;
+        // Exactly the bytes handed to the encryptor — reused for the local-echo
+        // entry so the sender's own bubble renders the identical string.
+        const outgoingText = input.trim() || " ";
         try {
           dto = await encryptMessageV3({
             roomId,
             epoch: epoch || 1,
             senderUid: user.uid,
             senderDeviceId: deviceId,
-            plaintext: input.trim() || " ",
+            plaintext: outgoingText,
             epochKey: key,
             senderIdentityPrivateKey: identityPrivateKey,
+            minSequenceNumber,
           });
           // Safe diagnostics only (no keys/plaintext ever logged)
           console.info("[send:v3:ratchet-ok]", {
@@ -1308,6 +1434,7 @@ function ChatInner() {
             epoch: epoch || 1,
             senderDeviceId: deviceId,
             sequenceNumber: dto.sequenceNumber,
+            sequenceFloor: minSequenceNumber,
           });
         } catch (err) {
           console.warn("[send:v3:failed]", {
@@ -1382,6 +1509,16 @@ function ChatInner() {
             viewOnce: record.viewOnce,
           });
         }
+        // Record the sealed payload BEFORE writing: Firebase fires the local
+        // `child_added` echo while `set()` is still awaiting, and that echo
+        // must find this entry (see the local-echo branch in decryptRow).
+        localEchoes.current.set(dto.messageId, {
+          plaintext: outgoingText,
+          ciphertext: dto.ciphertext,
+          iv: dto.iv,
+          sequenceNumber: dto.sequenceNumber,
+          timestamp: dto.timestamp,
+        });
         try {
           await set(ref(db, `rooms/${roomId}/messages/${dto.messageId}`), record);
           // Safe metadata: proves which optional fields actually reached the
@@ -1402,6 +1539,9 @@ function ChatInner() {
             roomId,
             error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
           });
+          // No row will ever arrive for this id — drop the echo entry so it
+          // can't be matched against an unrelated future delivery.
+          localEchoes.current.delete(dto.messageId);
           throw err;
         }
         if (otherUid) {

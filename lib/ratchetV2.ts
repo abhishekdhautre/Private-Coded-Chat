@@ -31,9 +31,59 @@ export const MAX_SKIPPED_KEYS = 50;
 // Expiration time for skipped message keys (10 minutes in ms)
 export const SKIPPED_KEY_TTL_MS = 600000;
 
-// In-memory stores for active sending/receiving ratchets and skipped keys
-const ratchetStateStore = new Map<string, RatchetStateV2>(); // key: `${roomId}:${epoch}:${senderDeviceId}`
-const skippedKeysStore = new Map<string, SkippedMessageKey[]>(); // key: `${roomId}:${epoch}:${senderDeviceId}`
+// In-memory stores for active sending/receiving ratchets and skipped keys.
+//
+// EVERY ratchet-state key is ROLE-SUFFIXED:
+//   `${roomId}:${epoch}:${senderDeviceId}:${role}`   with role = 'send' | 'recv'
+// so this device's send chain and its receive chain for the same peer device
+// are two completely independent states — neither can ever be read or mutated
+// by the other. The skipped-key store below is written exclusively by the
+// receive path, so it stays keyed by the chain it belongs to.
+const ratchetStateStore = new Map<string, RatchetStateV2>();
+const skippedKeysStore = new Map<string, SkippedMessageKey[]>();
+
+// Per-chain async locks. A single ratchet chain is MUTABLE shared state and
+// `advanceRatchetChain` reads `state.sequenceNumber` across await points, so
+// two concurrent advances of the same chain could both derive a key for the
+// same position and then both increment the counter — leaving the chain ahead
+// of its actual key position and permanently rejecting the next message with
+// "Sequence number N has already passed for active ratchet chain." Every
+// read-modify-write of a chain therefore runs inside withRatchetChainLock.
+const ratchetChainLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Serializes work that mutates a single ratchet chain.
+ *
+ * Locks are keyed by the exact same tuple as the state store
+ * (`roomId:epoch:senderDeviceId:role`), so a send chain and a receive chain —
+ * and one peer's chain and another's — remain fully parallel. A rejected run
+ * always releases its slot and never poisons the next caller's queue.
+ *
+ * This is pure concurrency control: it changes no protocol, no key schedule
+ * and no validation rule.
+ */
+export async function withRatchetChainLock<T>(
+  params: { roomId: string; epoch: number; senderDeviceId: string; role?: 'send' | 'recv' },
+  run: () => Promise<T>
+): Promise<T> {
+  const { roomId, epoch, senderDeviceId, role = 'send' } = params;
+  const key = `${roomId}:${epoch}:${senderDeviceId}:${role}`;
+
+  // Queued entries never reject (see `guard`), so `then(run)` is enough.
+  const previous = ratchetChainLocks.get(key) ?? Promise.resolve();
+  const current = previous.then(run);
+  const guard = current.then(
+    () => undefined,
+    () => undefined
+  );
+  ratchetChainLocks.set(key, guard);
+
+  try {
+    return await current;
+  } finally {
+    if (ratchetChainLocks.get(key) === guard) ratchetChainLocks.delete(key);
+  }
+}
 
 export function clearRatchetStore(): void {
   ratchetStateStore.clear();
@@ -135,6 +185,85 @@ export async function getOrInitRatchetState(params: {
 }
 
 /**
+ * Current position of an in-memory ratchet chain for a single role.
+ *
+ * Returns `null` when this JS context holds no state for that chain — which is
+ * exactly what a full page load, a mobile tab eviction or a crash restore
+ * produces: both stores above are module-level and are deliberately NOT
+ * persisted anywhere (localStorage / sessionStorage / Firebase).
+ */
+export function getRatchetPosition(params: {
+  roomId: string;
+  epoch: number;
+  senderDeviceId: string;
+  role?: 'send' | 'recv';
+}): number | null {
+  const { roomId, epoch, senderDeviceId, role = 'send' } = params;
+  return ratchetStateStore.get(`${roomId}:${epoch}:${senderDeviceId}:${role}`)?.sequenceNumber ?? null;
+}
+
+/**
+ * Upper bound on how far a chain may be fast-forwarded in a single resume.
+ * The floor is computed from message ROW METADATA (sequence numbers), and rows
+ * are written by signed participants, so an absurd value must fail loudly
+ * instead of spinning the tab on millions of derivations.
+ */
+export const MAX_SEQUENCE_FLOOR_ADVANCE = 25_000;
+
+/**
+ * Ensures a ratchet chain starts at or above `targetSequenceNumber`.
+ *
+ * Chain derivation is a pure function of (epochKey, roomId, epoch,
+ * senderDeviceId, position), so a chain that was lost together with its JS
+ * context can be rebuilt and advanced past every position this device has
+ * already used: the intermediate message keys are derived and DISCARDED —
+ * exactly like the receive-side gap catch-up — never stored and never reused
+ * to encrypt anything.
+ *
+ * This is what stops a resumed page from minting an already-used sequence
+ * number, which every receiver (including this device's own Firebase echo)
+ * rejects with "Sequence number N has already passed for active ratchet
+ * chain." Sequence validation on the receive path is untouched by this.
+ */
+export async function ensureRatchetSequenceFloor(params: {
+  roomId: string;
+  epoch: number;
+  senderDeviceId: string;
+  epochKey: CryptoKey;
+  role?: 'send' | 'recv';
+  targetSequenceNumber: number;
+}): Promise<{ state: RatchetStateV2; from: number; to: number }> {
+  const {
+    roomId,
+    epoch,
+    senderDeviceId,
+    epochKey,
+    role = 'send',
+    targetSequenceNumber,
+  } = params;
+
+  const state = await getOrInitRatchetState({ roomId, epoch, senderDeviceId, epochKey, role });
+  const from = state.sequenceNumber;
+  const target = Number.isFinite(targetSequenceNumber)
+    ? Math.max(from, Math.floor(targetSequenceNumber))
+    : from;
+
+  const gap = target - from;
+  if (gap > MAX_SEQUENCE_FLOOR_ADVANCE) {
+    // Safe metadata only — no keys, no plaintext.
+    throw new Error(
+      `Refusing to resume ratchet chain ${gap} positions ahead (limit ${MAX_SEQUENCE_FLOOR_ADVANCE}).`
+    );
+  }
+
+  while (state.sequenceNumber < target) {
+    await advanceRatchetChain(state, `resume_${roomId}_${epoch}_${state.sequenceNumber}`);
+  }
+
+  return { state, from, to: state.sequenceNumber };
+}
+
+/**
  * Advances the ratchet chain by one step, returning a non-extractable message key and updating the chain key.
  */
 export async function advanceRatchetChain(
@@ -199,12 +328,12 @@ export async function advanceRatchetChain(
     ['encrypt', 'decrypt']
   );
 
-  // Advance state
+  // Advance state. The store already holds THIS object under its
+  // role-suffixed key, so mutating it in place is all that is needed — there
+  // is deliberately no write to a role-less key, which is the one place send
+  // and receive chains could otherwise have collided.
   state.sequenceNumber += 1;
   state.chainKey = nextChainKey;
-
-  const key = `${state.roomId}:${state.epoch}:${state.senderDeviceId}`;
-  ratchetStateStore.set(key, state);
 
   return { messageKey, nextState: state };
 }

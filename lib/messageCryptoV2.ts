@@ -25,6 +25,9 @@ import {
   advanceRatchetChain,
   storeSkippedKey,
   consumeSkippedKey,
+  getRatchetPosition,
+  ensureRatchetSequenceFloor,
+  withRatchetChainLock,
   RatchetStateV2,
 } from '@/lib/ratchetV2';
 
@@ -99,6 +102,29 @@ export function recordMessageSeen(messageId: string): void {
 
 export function clearReplayCache(): void {
   seenMessageIds.clear();
+}
+
+/**
+ * Replay gate for a single V3 message.
+ *
+ * Runs TWICE per message: once before any network/crypto work (cheap early
+ * rejection, unchanged from the original behaviour) and again inside the
+ * per-chain lock — two concurrent deliveries of the same messageId could both
+ * pass the first check before either of them recorded the id as seen.
+ */
+function assertNotReplayed(message: MessageDTOV3): void {
+  if (isReplayMessage(message.messageId)) {
+    logV3Stage('fail-replay', {
+      messageId: message.messageId,
+      senderUid: message.senderUid,
+      senderDeviceId: message.senderDeviceId,
+      epoch: message.epoch,
+      sequenceNumber: message.sequenceNumber,
+    });
+    throw new Error(
+      `Replay attack detected: messageId '${message.messageId}' has already been processed.`
+    );
+  }
 }
 
 /**
@@ -324,6 +350,13 @@ export async function encryptMessageV3(params: {
   senderIdentityPrivateKey: CryptoKey;
   messageId?: string;
   timestamp?: number;
+  /**
+   * Highest sequence number this device has ALREADY used for this
+   * (roomId, epoch), read from room message rows by the chat page (metadata
+   * only). Used solely to resume an in-memory chain that was lost with its JS
+   * context; it is never a substitute for sequence validation on receive.
+   */
+  minSequenceNumber?: number;
 }): Promise<MessageDTOV3> {
   if (!isWebCryptoSupported()) {
     throw new Error('Web Crypto API is not supported in this environment.');
@@ -341,19 +374,55 @@ export async function encryptMessageV3(params: {
       ? globalThis.crypto.randomUUID()
       : `msg_v3_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     timestamp = Date.now(),
+    minSequenceNumber,
   } = params;
 
-  // 1. Get/init ratchet state and advance chain
-  const ratchetState = await getOrInitRatchetState({
-    roomId,
-    epoch,
-    senderDeviceId,
-    epochKey,
-    role: 'send',
-  });
+  // 1. Get/init the SEND ratchet state, resuming it past every sequence number
+  //    this device already used for this (room, epoch). The chain only lives
+  //    in memory, so a page reload or a mobile tab eviction restarts it at 0
+  //    while the room's message rows — and every receiver's receive chain —
+  //    are already further ahead. Minting 0 again is then rejected with
+  //    "Sequence number 0 has already passed", including by this device's own
+  //    Firebase echo, and the bubble renders as "Unable to decrypt message."
+  //    Floor = max(observed row metadata, this device's own receive chain).
+  const recvPosition =
+    getRatchetPosition({ roomId, epoch, senderDeviceId, role: 'recv' }) ?? 0;
+  const floor = Math.max(minSequenceNumber ?? 0, recvPosition);
 
-  const seqNum = ratchetState.sequenceNumber;
-  const { messageKey } = await advanceRatchetChain(ratchetState, messageId);
+  // Serialize every read-modify-write of this SEND chain. `advanceRatchetChain`
+  // reads state.sequenceNumber across await points, so two overlapping sends
+  // could both mint the same sequence number — and the receiver (including
+  // this device's own Firebase echo) would then reject the loser with
+  // "Sequence number N has already passed for active ratchet chain."
+  const { seqNum, messageKey } = await withRatchetChainLock(
+    { roomId, epoch, senderDeviceId, role: 'send' },
+    async () => {
+      const { state, from } = await ensureRatchetSequenceFloor({
+        roomId,
+        epoch,
+        senderDeviceId,
+        epochKey,
+        role: 'send',
+        targetSequenceNumber: floor,
+      });
+      if (floor > from) {
+        // Safe diagnostics: identifiers and counters only — never key material.
+        console.info('[v3-send:resume]', {
+          roomId,
+          epoch,
+          senderDeviceId,
+          resumedFrom: from,
+          resumedTo: floor,
+          observedFloor: minSequenceNumber ?? 0,
+          recvPosition,
+        });
+      }
+
+      const sequenceNumber = state.sequenceNumber;
+      const { messageKey: key } = await advanceRatchetChain(state, messageId);
+      return { seqNum: sequenceNumber, messageKey: key };
+    }
+  );
 
   // 2. Generate fresh 12-byte IV
   const ivBytes = globalThis.crypto.getRandomValues(new Uint8Array(12));
@@ -570,16 +639,7 @@ export async function receiveMessageV3(params: {
     throw new Error('Malformed V3 message structure: missing required fields.');
   }
 
-  if (isReplayMessage(message.messageId)) {
-    logV3Stage('fail-replay', {
-      messageId: message.messageId,
-      senderUid: message.senderUid,
-      senderDeviceId: message.senderDeviceId,
-      epoch: message.epoch,
-      sequenceNumber: message.sequenceNumber,
-    });
-    throw new Error(`Replay attack detected: messageId '${message.messageId}' has already been processed.`);
-  }
+  assertNotReplayed(message);
 
   logV3Stage('start', {
     messageId: message.messageId,
@@ -658,6 +718,49 @@ export async function receiveMessageV3(params: {
     senderDeviceId: message.senderDeviceId,
     sequenceNumber: message.sequenceNumber,
   });
+
+  // ── Serialized section ────────────────────────────────────────────────────
+  // Everything below reads and mutates this sender's RECEIVE chain, which is
+  // mutable shared state. Concurrent deliveries reach this point routinely:
+  //   - `child_added` racing `child_changed` for the SAME row — a peer's read
+  //     receipt lands while the sender's own echo is still decrypting, and
+  //   - a listener re-subscription replaying history while an earlier decrypt
+  //     is still in flight (lock/unlock, remount, room re-entry).
+  // Two overlapping advances both read state.sequenceNumber across await
+  // points, derive a key for the SAME position and then both increment the
+  // counter — leaving the chain ahead of its own key schedule, after which
+  // every later message from this device fails with "Sequence number N has
+  // already passed for active ratchet chain." and the bubble renders as
+  // "Unable to decrypt message."
+  return withRatchetChainLock(
+    {
+      roomId: message.roomId,
+      epoch: message.epoch,
+      senderDeviceId: message.senderDeviceId,
+      role: 'recv',
+    },
+    () => resolveAndDecryptV3({ message, epochKey })
+  );
+}
+
+/**
+ * Key resolution + AES-GCM decryption for a single V3 message.
+ *
+ * MUST be called while holding the receive-chain lock for
+ * (roomId, epoch, senderDeviceId) — see withRatchetChainLock.
+ */
+async function resolveAndDecryptV3(params: {
+  message: MessageDTOV3;
+  epochKey?: CryptoKey;
+}): Promise<string> {
+  const { message, epochKey } = params;
+
+  // Second replay gate: the early check in receiveMessageV3() runs BEFORE this
+  // section, so two concurrent deliveries of the same messageId could both pass
+  // it. Inside the lock a concurrent duplicate is either already finished
+  // (id recorded below) or queued behind us — so it is rejected here instead
+  // of being allowed to resolve a message key a second time.
+  assertNotReplayed(message);
 
   // Resolve messageKey (check skipped keys store or advance ratchet chain)
   let msgKey = consumeSkippedKey(
@@ -831,6 +934,8 @@ export async function sendMessageV3(params: {
   senderDeviceId: string;
   epochKey: CryptoKey;
   senderIdentityPrivateKey: CryptoKey;
+  /** See encryptMessageV3 — sequence floor read from room message metadata. */
+  minSequenceNumber?: number;
 }): Promise<MessageDTOV3> {
   const message = await encryptMessageV3(params);
   const msgRef = ref(db, `rooms/${params.roomId}/messages/${message.messageId}`);
