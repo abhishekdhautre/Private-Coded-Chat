@@ -13,6 +13,7 @@ import { isDuplicateDelivery } from "@/lib/messageDedupe";
 import { singleFlight } from "@/lib/singleFlight";
 import type { InFlightRun } from "@/lib/singleFlight";
 import { mergeIncomingMessage, partitionExpired } from "@/lib/chatMerge";
+import { describeReplyQuote } from "@/lib/replyQuote";
 import {
   loadNotifyMuted,
   saveNotifyMuted,
@@ -33,7 +34,7 @@ import { GifPicker } from "@/components/GifPicker";
 import { CameraCapture } from "@/components/CameraCapture";
 import { BrandMark, Icon } from "@/components/Icon";
 import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
-import { markChatRead, touchChatMeta, subscribeProfile } from "@/lib/userService";
+import { markChatRead, touchChatMeta, subscribeProfile, subscribeUserSettings } from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
 import {
   receiveMessageV3,
@@ -62,16 +63,20 @@ const DISAPPEARING_OPTIONS: { value: string; label: string }[] = [
 
 /**
  * Conversation modes already persisted in room meta.
- * Only modes with real send/receive behaviour are described as such below.
+ * GHOST / VAULT / STEALTH have no behaviour behind them — their hints say so
+ * and the picker renders them disabled ("Coming soon") instead of selectable.
  */
 const MODE_HINTS: Record<ConversationMode, string> = {
   NORMAL: "Standard messaging",
-  GHOST: "Room label; messages persist normally",
+  GHOST: "Coming soon — no behaviour yet",
   BURST: "New messages auto-expire after 1 minute",
-  VAULT: "Room label; messages persist normally",
-  STEALTH: "Room label; messages persist normally",
-  LIVE: "Used by live sessions",
+  VAULT: "Coming soon — no behaviour yet",
+  STEALTH: "Coming soon — no behaviour yet",
+  LIVE: "Live session (timed lock)",
 };
+
+/** Modes with no implementation — shown disabled in the picker, never settable. */
+const COMING_SOON_MODES: ReadonlySet<ConversationMode> = new Set(["GHOST", "VAULT", "STEALTH"]);
 
 function timeAgoChat(ts: number): string {
   const d = Date.now() - ts;
@@ -109,6 +114,7 @@ function MediaTimer({ expiresAt }: { expiresAt: number }) {
 function MessageBubble({
   m, isMine, revealed, keyword, onDelete, onDeleteForMe, onConsume, onReact, onReply, onEdit, onPin, onSelect, selected, myUid,
   highlighted = false, groupStart = true, groupEnd = true, rowRef,
+  replyTarget = null, peerLabel = "Them", onQuoteClick = () => {},
 }: {
   m: DecryptedMessage;
   isMine: boolean;
@@ -130,6 +136,13 @@ function MessageBubble({
   /** True when this is the final message of its group; controls the timestamp. */
   groupEnd?: boolean;
   rowRef?: (el: HTMLElement | null) => void;
+  /** Original message this is a reply to, resolved from the local decrypted
+      list — null when this isn't a reply OR the original is gone. */
+  replyTarget?: DecryptedMessage | null;
+  /** Display name of the chat peer, for quote authorship. */
+  peerLabel?: string;
+  /** Jump to the quoted message (graceful no-op when it no longer exists). */
+  onQuoteClick?: (id: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionOpen, setReactionOpen] = useState(false);
@@ -280,8 +293,32 @@ function MessageBubble({
             <p className="text-xs text-slate-500 italic">Media expired or unavailable.</p>
           )}
 
+          {/* Quoted reply — resolved from already-decrypted local messages only,
+              so it can never show plaintext this device hasn't decrypted. Taps
+              jump to the original when it still exists (jumpToMessage is a
+              graceful no-op otherwise). */}
+          {m.replyTo && (() => {
+            const quote = describeReplyQuote(replyTarget, { myUid, peerLabel });
+            const quoted = quote.isContent && !revealed ? encodeText(quote.text, keyword) : quote.text;
+            return quote.available ? (
+              <button
+                type="button"
+                onClick={() => { if (m.replyTo) onQuoteClick(m.replyTo); }}
+                className="reply-quote"
+                aria-label={`Jump to message from ${quote.author}`}
+              >
+                <span className="reply-quote-author">{quote.author}</span>
+                <span className="reply-quote-text">{quoted}</span>
+              </button>
+            ) : (
+              <p className="reply-quote reply-quote-missing" aria-label="Quoted message unavailable">
+                <span className="reply-quote-author">{quote.author}</span>
+                <span className="reply-quote-text">{quote.text}</span>
+              </p>
+            );
+          })()}
+
           {/* Text */}
-          {m.replyTo && <p className="mb-1 border-l-2 border-cyan-300/60 pl-2 text-[11px] text-slate-300">Replying to a message</p>}
           {!isSticker && m.plaintext && m.plaintext.trim() !== "" && (
             <p className="whitespace-pre-wrap break-words text-sm leading-6">{display}</p>
           )}
@@ -423,8 +460,15 @@ function ChatInner() {
   const [typing, setTyping] = useState(false);
   const [otherTyping, setOtherTyping] = useState(false);
   const [unread, setUnread] = useState(0);
+  // GIF search needs a configured provider key — when it is missing the
+  // picker shows an explicit setup notice instead of a working search.
+  const giphyEnabled = (process.env.NEXT_PUBLIC_GIPHY_API_KEY ?? "") !== "";
   const [notifyMuted, setNotifyMuted] = useState(false);
   const [browserNotifyOn, setBrowserNotifyOn] = useState(false);
+  // Account-level message-sound switch (Settings → Notifications → Messages).
+  // Defaults ON via DEFAULT_SETTINGS; the chat-menu mute stays as the
+  // device-local switch — sound plays only when BOTH allow it.
+  const [settingsSoundsOn, setSettingsSoundsOn] = useState(true);
   const [disappearingLoading, setDisappearingLoading] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
   const [showGifs, setShowGifs] = useState(false);
@@ -519,6 +563,7 @@ function ChatInner() {
   const sendingRef = useRef(false);
   const composingRef = useRef(false);
   const notifyMutedRef = useRef(false);
+  const settingsSoundsRef = useRef(true);
   const browserNotifyRef = useRef(false);
   const roomLabelRef = useRef("Private room");
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -685,6 +730,14 @@ function ChatInner() {
     return messages.filter((m) => m.plaintext.toLowerCase().includes(query));
   }, [messages, search]);
 
+  // O(1) lookup of already-decrypted messages by id — backs reply quotes and
+  // quote tap-to-jump. Quotes resolve locally only, never from the network.
+  const messageById = useMemo(() => {
+    const map = new Map<string, DecryptedMessage>();
+    for (const m of messages) map.set(m.id, m);
+    return map;
+  }, [messages]);
+
   const openMediaViewer = useCallback(
     (item: DecryptedMessage) => {
       if (!item.mediaBlobUrl) return;
@@ -820,9 +873,17 @@ function ChatInner() {
     sendingRef.current = sending;
     composingRef.current = input.trim().length > 0;
     notifyMutedRef.current = notifyMuted;
+    settingsSoundsRef.current = settingsSoundsOn;
     browserNotifyRef.current = browserNotifyOn;
     roomLabelRef.current = friendProfile?.displayName ?? "Private room";
   });
+
+  // Account-level sound switch: Settings → Notifications → Messages gates the
+  // same chat sounds as the in-chat mute (existing subscription API only).
+  useEffect(() => {
+    if (!user?.uid) return;
+    return subscribeUserSettings(user.uid, (s) => setSettingsSoundsOn(s.notif_messages));
+  }, [user?.uid]);
 
   // Subscribe to messages — incremental onChild* listeners, exactly ONE active
   // subscription per room/user/key while mounted.
@@ -1147,7 +1208,9 @@ function ChatInner() {
             decryptOk,
             isDuplicateDelivery: notifiedIds.current.has(id),
             isHistorical: false,
-            muted: notifyMutedRef.current,
+            // Sound plays only when BOTH the in-chat mute and the account-level
+            // Settings → Messages switch allow it.
+            muted: notifyMutedRef.current || !settingsSoundsRef.current,
             isSending: sendingRef.current || composingRef.current,
             alreadyNotified: false,
           });
@@ -1429,6 +1492,19 @@ function ChatInner() {
       showToast("1h live session started");
     }
     catch { setError("Could not start ghost session."); }
+  };
+
+  // End a live session early — clears the timed lock via the SAME meta fields
+  // the start flow writes (no second backend). Syncs to both devices through
+  // the existing meta listener; mode returns to NORMAL so the room no longer
+  // claims to be live.
+  const endGhostSession = async () => {
+    setSessionExpiresAt(null);
+    try {
+      await update(ref(db, `rooms/${roomId}/meta`), { sessionExpiresAt: null, mode: "NORMAL" });
+      showToast("Live session ended");
+    }
+    catch { setError("Could not end live session."); }
   };
 
   const sendMoment = async () => {
@@ -1952,7 +2028,20 @@ function ChatInner() {
                   )}
 
                   {unread > 0 && (
-                    <button type="button" role="menuitem" className="chat-menu-btn" onClick={() => { setUnread(0); closeOverflowMenu(); showToast("Marked as seen"); }}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="chat-menu-btn"
+                      onClick={() => {
+                        // Immediate local update, then the SAME persisted
+                        // read-state path used on room open (userChats unread
+                        // + legacy chatMeta unreadCounts) — no new system.
+                        setUnread(0);
+                        closeOverflowMenu();
+                        showToast("Marked as seen");
+                        if (user) void markChatRead(roomId, user.uid).catch(() => {});
+                      }}
+                    >
                       <span className="chat-menu-icon" aria-hidden="true"><Icon name="check" size={18} /></span>
                       <span className="chat-menu-text">
                         <span className="chat-menu-label">Mark unread as seen</span>
@@ -2124,8 +2213,9 @@ function ChatInner() {
                     className="chat-menu-btn"
                     aria-current={!!sessionExpiresAt && sessionExpiresAt > Date.now()}
                     onClick={() => {
+                      // An active session can be ended early — no dead end.
                       if (sessionExpiresAt && sessionExpiresAt > Date.now()) {
-                        showToast("A live session is already active");
+                        void endGhostSession();
                         return;
                       }
                       void startGhostSession(60 * 60 * 1000);
@@ -2134,11 +2224,11 @@ function ChatInner() {
                     <span className="chat-menu-icon" aria-hidden="true"><Icon name="radio" size={18} /></span>
                     <span className="chat-menu-text">
                       <span className="chat-menu-label">
-                        {sessionExpiresAt && sessionExpiresAt > Date.now() ? "Live session active" : "Start 1h live session"}
+                        {sessionExpiresAt && sessionExpiresAt > Date.now() ? "End live session" : "Start 1h live session"}
                       </span>
                       <span className="chat-menu-hint">
                         {sessionExpiresAt && sessionExpiresAt > Date.now()
-                          ? `Chat locks ${timeUntilChat(sessionExpiresAt)}`
+                          ? `Active — locks ${timeUntilChat(sessionExpiresAt)}. Tap to end now.`
                           : "Sets a 1 hour session and locks the chat at the end"}
                       </span>
                     </span>
@@ -2187,6 +2277,9 @@ function ChatInner() {
                 else messageAnchors.current.delete(m.id);
               }}
               myUid={user?.uid ?? ""}
+              replyTarget={m.replyTo ? messageById.get(m.replyTo) ?? null : null}
+              peerLabel={friendProfile?.displayName ?? "Them"}
+              onQuoteClick={jumpToMessage}
             />
           ))}
           <div ref={bottom} />
@@ -2476,10 +2569,25 @@ function ChatInner() {
                       <select
                         id="mode-select"
                         value={conversationMode}
-                        onChange={(event) => void updateConversationMode(event.target.value as ConversationMode)}
+                        onChange={(event) => {
+                          const mode = event.target.value as ConversationMode;
+                          // LIVE is not a label — picking it runs the existing
+                          // 1h live-session flow (never silently reset by this).
+                          if (mode === "LIVE") {
+                            if (sessionExpiresAt && sessionExpiresAt > Date.now()) {
+                              showToast("A live session is already active");
+                              return;
+                            }
+                            void startGhostSession(60 * 60 * 1000);
+                            return;
+                          }
+                          void updateConversationMode(mode);
+                        }}
                       >
                         {(["NORMAL", "GHOST", "BURST", "VAULT", "STEALTH", "LIVE"] as ConversationMode[]).map((mode) => (
-                          <option key={mode} value={mode}>{mode} — {MODE_HINTS[mode]}</option>
+                          <option key={mode} value={mode} disabled={COMING_SOON_MODES.has(mode)}>
+                            {mode} — {MODE_HINTS[mode]}{COMING_SOON_MODES.has(mode) ? " (coming soon)" : ""}
+                          </option>
                         ))}
                       </select>
                     </label>
@@ -2516,17 +2624,17 @@ function ChatInner() {
                     <button
                       type="button"
                       onClick={() => {
+                        // An active session can be ended early — no dead end.
                         if (sessionExpiresAt && sessionExpiresAt > Date.now()) {
-                          showToast("A live session is already active");
+                          void endGhostSession();
                           return;
                         }
                         void startGhostSession(60 * 60 * 1000);
                       }}
-                      disabled={!!sessionExpiresAt && sessionExpiresAt > Date.now()}
                       className="privacy-action"
-                      title={sessionExpiresAt && sessionExpiresAt > Date.now() ? "A live session is already running" : undefined}
+                      title={sessionExpiresAt && sessionExpiresAt > Date.now() ? "End the running session now" : undefined}
                     >
-                      {sessionExpiresAt && sessionExpiresAt > Date.now() ? "Live session active" : "Start 1h live session"}
+                      {sessionExpiresAt && sessionExpiresAt > Date.now() ? "End live session" : "Start 1h live session"}
                     </button>
                   </div>
                 </div>
@@ -2632,8 +2740,8 @@ function ChatInner() {
                   <button type="button" onClick={() => { setShowStickers((v) => !v); setShowGifs(false); setShowAttachMenu(false); }} className="attach-menu-item">
                     🎭 <span>Sticker</span>
                   </button>
-                  <button type="button" onClick={() => { setShowGifs((v) => !v); setShowStickers(false); setShowAttachMenu(false); }} className="attach-menu-item">
-                    🎞️ <span>GIF</span>
+                  <button type="button" onClick={() => { setShowGifs((v) => !v); setShowStickers(false); setShowAttachMenu(false); }} className="attach-menu-item" aria-label={giphyEnabled ? "Send a GIF" : "GIF search unavailable (no API key configured)"}>
+                    🎞️ <span>GIF{giphyEnabled ? "" : " · setup needed"}</span>
                   </button>
                 </div>
               )}
@@ -2674,9 +2782,11 @@ function ChatInner() {
               >Revealed</button>
             </div>
 
-            {/* Send */}
+            {/* Send — type="submit" so a click runs the exact same send flow as
+                Enter (form onSubmit). Duplicate presses are blocked by the
+                `sending` guard inside send() plus the disabled state below. */}
             <button
-              type="button"
+              type="submit"
               disabled={sending || (!input.trim() && !mediaFile)}
               className="btn-send"
               aria-label={sending ? "Sending message" : "Send message"}

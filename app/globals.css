@@ -613,8 +613,33 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 
 .sticker-display { font-size: 3.25rem; line-height: 1.1; display: block; }
 
-.chat-meta {
-  display: flex;
+/* Quoted reply preview — compact, tappable, visually distinct from the body. */
+.reply-quote {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 0.35rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.6rem;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  background: var(--bg-hover);
+  cursor: pointer;
+}
+button.reply-quote:hover { background: var(--bg-active); }
+button.reply-quote:active { transform: translateY(1px); }
+.reply-quote-missing { cursor: default; opacity: 0.75; }
+.reply-quote-author { display: block; font-size: 0.66rem; font-weight: 600; color: var(--accent-text); }
+.reply-quote-text {
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-meta { display: flex;
   align-items: center;
   gap: 0.35rem;
   margin-top: 0.12rem;
@@ -1243,6 +1268,7 @@ nextjs-portal, [data-nextjs-toast], [data-nextjs-portal] { display: none !import
 .settings-back-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .settings-section { border: 1px solid var(--border-subtle); border-radius: var(--r-lg); background: var(--bg-surface); overflow: hidden; }
 .settings-section-title { margin: 0; padding: 0.7rem 0.9rem; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-disabled); border-bottom: 1px solid var(--border-subtle); }
+.settings-section-note { margin: 0; padding: 0.6rem 0.9rem; font-size: 0.72rem; line-height: 1.45; color: var(--text-muted); }
 .settings-toggle-row, .settings-select-row { display: flex; align-items: center; justify-content: space-between; gap: 0.9rem; min-height: 52px; padding: 0.6rem 0.9rem; }
 .settings-toggle-row + .settings-toggle-row, .settings-select-row + .settings-select-row { border-top: 1px solid var(--border-subtle); }
 .settings-toggle-label { display: grid; gap: 0.1rem; }

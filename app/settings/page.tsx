@@ -26,23 +26,6 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   );
 }
 
-function Select<T extends string>({
-  value, onChange, options, label,
-}: { value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; label: string }) {
-  return (
-    <label className="settings-select-row">
-      <span className="settings-toggle-label">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as T)}
-        className="settings-select"
-      >
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </label>
-  );
-}
-
 function SettingsInner() {
   const { user } = useAuth();
   const router = useRouter();
@@ -66,12 +49,6 @@ function SettingsInner() {
 
   if (!settings) return <main className="app-page"><p className="loading-text">Loading…</p></main>;
 
-  const visibilityOpts = [
-    { value: "everyone" as const, label: "Everyone" },
-    { value: "friends" as const, label: "Friends only" },
-    { value: "nobody" as const, label: "Nobody" },
-  ];
-
   return (
     <PresenceGuard>
       <main className="app-page">
@@ -87,31 +64,24 @@ function SettingsInner() {
         <div className="settings-body">
           <section className="settings-section">
             <h2 className="settings-section-title">Notifications</h2>
-            <Toggle label="Messages" checked={settings.notif_messages} onChange={(v) => void patch({ notif_messages: v })} />
-            <Toggle label="Friend Requests" checked={settings.notif_friendRequests} onChange={(v) => void patch({ notif_friendRequests: v })} />
-            <Toggle label="Reactions" checked={settings.notif_reactions} onChange={(v) => void patch({ notif_reactions: v })} />
-            <Toggle label="Replies" checked={settings.notif_replies} onChange={(v) => void patch({ notif_replies: v })} />
-            <Toggle label="Media" checked={settings.notif_media} onChange={(v) => void patch({ notif_media: v })} />
-            <Toggle label="Show message preview" checked={settings.notif_preview} onChange={(v) => void patch({ notif_preview: v })} />
+            <Toggle
+              label="Messages"
+              checked={settings.notif_messages}
+              onChange={(v) => void patch({ notif_messages: v })}
+            />
+            <p className="settings-section-note">
+              Plays a sound for new incoming messages. The in-chat mute switch silences sounds on this device only.
+            </p>
+            {/* Friend-request, reaction, reply, media and preview toggles were
+                removed: no producer/consumer implements them, and showing them
+                implied behaviour that does not exist. */}
           </section>
 
-          <section className="settings-section">
-            <h2 className="settings-section-title">Privacy</h2>
-            <Select
-              label="Online status visible to"
-              value={settings.privacy_onlineStatus}
-              onChange={(v) => void patch({ privacy_onlineStatus: v })}
-              options={visibilityOpts}
-            />
-            <Select
-              label="Last seen visible to"
-              value={settings.privacy_lastSeen}
-              onChange={(v) => void patch({ privacy_lastSeen: v })}
-              options={visibilityOpts}
-            />
-            <Toggle label="Read receipts" checked={settings.privacy_readReceipts} onChange={(v) => void patch({ privacy_readReceipts: v })} />
-            <Toggle label="Typing indicator" checked={settings.privacy_typingIndicator} onChange={(v) => void patch({ privacy_typingIndicator: v })} />
-          </section>
+          {/* Privacy switches (online/last-seen visibility, read receipts,
+              typing indicator) were removed: presence, receipts and typing are
+              currently always-on protocol behaviour with no per-user gating, so
+              the controls were placebo. They can return once a real gating
+              implementation lands. */}
         </div>
 
         <BottomNav />
