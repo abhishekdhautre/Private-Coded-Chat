@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
@@ -232,34 +232,57 @@ function FriendsInner() {
   const [incoming, setIncoming] = useState<FriendRequest[]>([]);
   const [outgoing, setOutgoing] = useState<FriendRequest[]>([]);
   const [filter, setFilter] = useState("");
-  // Session generation guard: prevents old subscription callbacks from
-  // updating state after the auth UID changes. Changes when the user
-  // logs in/out or switches accounts, causing in-flight listeners to
-  // no-op instead of mutating the new account's state.
-  const [sessionId, setSessionId] = useState(0);
+  // Session generation guard for subscription callbacks.
+  //
+  // A ref (not state) on purpose: a ref bump cannot trigger a re-render, so it
+  // cannot re-run this effect and cannot create a subscribe/unsubscribe loop.
+  // Every callback captures the generation that was current when its listener
+  // was attached and drops its result if the account has since changed, so an
+  // in-flight callback from the previous account can never paint the new one.
+  const sessionGenRef = useRef(0);
 
+  // Keyed on the stable `user?.uid` STRING, never the `user` object: Firebase
+  // emits fresh User object identities, and re-subscribing on identity churn
+  // would replay every listener for nothing.
   useEffect(() => {
-    if (!user) return;
-    const currentSession = sessionId;
-    const unsub1 = subscribeFriends(user.uid, (uids) => {
-      // Only update state if this callback belongs to the current session
-      if (currentSession === sessionId) setFriendUids(uids);
+    const uid = user?.uid;
+
+    // Invalidate any callback still in flight from a previous account, and drop
+    // the previous account's data BEFORE the new listeners can deliver. Without
+    // this reset the old account's friend count stays on screen (e.g. "Friends
+    // 6") until Firebase answers for the new UID, which must never be visible.
+    sessionGenRef.current += 1;
+    const generation = sessionGenRef.current;
+    setFriendUids([]);
+    setIncoming([]);
+    setOutgoing([]);
+    setLoaded(false);
+
+    if (!uid) return;
+    const isCurrent = () => sessionGenRef.current === generation;
+
+    const unsub1 = subscribeFriends(uid, (uids) => {
+      if (isCurrent()) {
+        setFriendUids(uids);
+        setLoaded(true);
+      }
     });
-    const unsub2 = subscribeIncomingRequests(user.uid, (reqs) => {
-      if (currentSession === sessionId) setIncoming(reqs);
+    const unsub2 = subscribeIncomingRequests(uid, (reqs) => {
+      if (isCurrent()) setIncoming(reqs);
     });
-    const unsub3 = subscribeOutgoingRequests(user.uid, (reqs) => {
-      if (currentSession === sessionId) setOutgoing(reqs);
+    const unsub3 = subscribeOutgoingRequests(uid, (reqs) => {
+      if (isCurrent()) setOutgoing(reqs);
     });
-    // Increment session id on UID change so in-flight old callbacks no-op
-    if (user) setSessionId((c) => c + 1);
     return () => {
       unsub1();
       unsub2();
       unsub3();
     };
-  }, [user, sessionId]);
+  }, [user?.uid]);
 
+  // False until the FIRST listener for the current account has answered, so a
+  // pending load is not misreported as "No friends yet".
+  const [loaded, setLoaded] = useState(false);
   const incomingCount = incoming.length;
   const outgoingCount = outgoing.length;
 
@@ -320,7 +343,12 @@ function FriendsInner() {
               </div>
             )}
             <div className="friends-list">
-              {friendUids.length === 0 && (
+              {!loaded && (
+                <div className="empty-home" role="status">
+                  <p className="loading-text">Loading friends…</p>
+                </div>
+              )}
+              {loaded && friendUids.length === 0 && (
                 <div className="empty-home">
                   <span className="text-4xl">🤝</span>
                   <p>No friends yet.</p>

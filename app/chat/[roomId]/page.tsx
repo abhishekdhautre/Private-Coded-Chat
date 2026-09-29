@@ -50,8 +50,6 @@ import {
 } from "@/lib/messageCryptoV2";
 import { acquireV2RoomKey, ensureRoomKeyEnvelopesForMembers } from "@/lib/roomKeyService";
 
-const contextSessionRef = useRef(-1);
-
 const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 const DISAPPEARING_MS = 24 * 60 * 60 * 1000;
@@ -85,6 +83,16 @@ const MODE_HINTS: Record<ConversationMode, string> = {
 
 /** Modes with no implementation — shown disabled in the picker, never settable. */
 const COMING_SOON_MODES: ReadonlySet<ConversationMode> = new Set(["GHOST", "VAULT", "STEALTH"]);
+
+/**
+ * Rejection reasons that are EXPECTED control flow, not failures. These rows are
+ * skipped silently: an expired row is removed, a hidden row is not shown, and a
+ * stale-session row belongs to a scope the user has already left — so none of
+ * them are a decryption problem and none may surface as a user-facing error.
+ */
+function isQuietSkip(reason: string): boolean {
+  return reason === "expired" || reason === "deleted-for-me" || reason === "stale-session";
+}
 
 function timeAgoChat(ts: number): string {
   const d = Date.now() - ts;
@@ -577,7 +585,6 @@ function ChatInner() {
   const notifyMutedRef = useRef(false);
   const settingsSoundsRef = useRef(true);
   const browserNotifyRef = useRef(false);
-  const contextSessionRef = useRef(-1);
   const roomLabelRef = useRef("Private room");
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
@@ -882,6 +889,8 @@ function ChatInner() {
 
   // Mirror render state into refs so the realtime listener callbacks (which
   // must NOT re-subscribe on every keystroke) always read fresh values.
+  // Deliberately NO dep array: this must run on every render so `sendingRef` /
+  // `composingRef` track typing and send state for the notification decision.
   useEffect(() => {
     sendingRef.current = sending;
     composingRef.current = input.trim().length > 0;
@@ -889,25 +898,28 @@ function ChatInner() {
     settingsSoundsRef.current = settingsSoundsOn;
     browserNotifyRef.current = browserNotifyOn;
     roomLabelRef.current = friendProfile?.displayName ?? "Private room";
-    // Session guard: track context changes so stale in-flight decrypts
-    // from a previous account/room/key can be recognised and no-op.
-    contextSessionRef.current = sessionId;
-  }, [key, roomId, user?.uid]);
+  });
 
+  // Session generation guard.
+  //
+  // Bumping `sessionId` invalidates every in-flight decrypt callback captured
+  // by the realtime listener, so work started under a previous
+  // (auth UID, roomId, key) can never mutate current UI state.
+  //
+  // `sessionScopeRef` holds the scope string that `sessionId` was last bumped
+  // FOR. Comparing against it (rather than against `sessionId`) avoids reading
+  // state inside the effect that also writes it, which previously created a
+  // re-render loop. A ref comparison is synchronous and runs at most once per
+  // distinct scope, so this cannot loop.
+  const sessionScopeRef = useRef<string>("");
+  const sessionScope = `${user?.uid ?? "anon"}::${roomId}::${epoch ?? 1}`;
   useEffect(() => {
-    if (!key || !user) return;
-    // Increment session id when context changes (user, room, or key) so that
-    // in-flight callbacks from the previous context no-op instead of mutating
-    // current UI state. We track the previous session id to avoid incrementing
-    // on the initial mount.
-    const firstRun = contextSessionRef.current === -1;
-    if (!firstRun && contextSessionRef.current !== sessionId) {
-      setSessionId((c) => c + 1);
-    }
-    contextSessionRef.current = sessionId;
-    // Mark as "started" so firstRun logic works on subsequent runs
-    if (firstRun) contextSessionRef.current = -1;
-  }, [key, roomId, user?.uid]);
+    if (sessionScopeRef.current === sessionScope) return;
+    sessionScopeRef.current = sessionScope;
+    // Bumping the generation makes any pending decrypt from the previous scope
+    // a stale-session no-op rather than a visible "Unable to decrypt message."
+    setSessionId((c) => c + 1);
+  }, [sessionScope]);
 
   // Account-level sound switch: Settings → Notifications → Messages gates the
   // same chat sounds as the in-chat mute (existing subscription API only).
@@ -940,7 +952,6 @@ function ChatInner() {
       localEchoes.current.clear();
       notifiedIds.current.clear();
       sendSeqFloor.current = { roomId: "", epoch: 0, value: 0 };
-      setSessionId((c) => c + 1);
     }
 
     // Cutover between history replay and live arrivals for THIS subscription.
@@ -970,14 +981,23 @@ function ChatInner() {
     async function decryptRowPayload(id: string, row: StoredMessage): Promise<{ msg: DecryptedMessage; decryptOk: boolean; fresh: boolean }> {
       const rowAny = row as any;
 
-      // Only process if this callback belongs to the current session.
-      // Old in-flight callbacks from a previous account/room will no-op here.
+      // Stale-session guard. `currentSession` was captured when this listener
+      // attached; `sessionId` is bumped whenever the (auth UID, roomId, epoch)
+      // scope changes. A mismatch means the user switched account/room (or the
+      // key was re-acquired) while this decrypt was in flight, so its result
+      // must not reach the new session's UI.
+      //
+      // Throws the SAME sentinel as an expired/hidden row so callers treat it as
+      // "skip quietly" — never as a visible "Unable to decrypt message." and
+      // never as a row to be inserted into the transcript.
       if (currentSession !== sessionId) {
-        console.info("[chat:decrypt:stale-session]", { messageId: id, sessionMismatch: currentSession, currentSession: sessionId });
-        return Promise.resolve({ msg: { ...row, id, plaintext: "Unable to decrypt message." }, decryptOk: false, fresh: false });
+        console.info("[chat:decrypt:stale-session]", {
+          messageId: id,
+          capturedSession: currentSession,
+          currentSession: sessionId,
+        });
+        throw new Error("stale-session");
       }
-
-      // ── Sequence floor (metadata only, runs before any crypto) ────────────
 
       // ── Sequence floor (metadata only, runs before any crypto) ────────────
       // Count this device's OWN highest V3 sequence number from the row as
@@ -1307,9 +1327,9 @@ function ChatInner() {
         }
       } catch (err) {
         // Never swallow silently: distinguish the intentional skips
-        // (expired / deleted-for-me) from anything unexpected.
+        // (expired / deleted-for-me / stale-session) from anything unexpected.
         const reason = err instanceof Error ? err.message : String(err);
-        if (reason !== "expired" && reason !== "deleted-for-me") {
+        if (!isQuietSkip(reason)) {
           console.warn("[chat:message:add-failed]", {
             messageId: id,
             mediaType: row.mediaType ?? null,
@@ -1354,7 +1374,14 @@ function ChatInner() {
         setMessages((prev) => prev.map((m) => m.id === id ? msg : m));
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        if (reason !== "expired" && reason !== "deleted-for-me") {
+        // A stale-session result belongs to a PREVIOUS scope. Mutating the cache
+        // or evicting the row here would delete a message that belongs to the
+        // CURRENT session, so bail out before touching any state.
+        if (reason === "stale-session") {
+          console.info("[chat:message:change:stale-session]", { messageId: id });
+          return;
+        }
+        if (!isQuietSkip(reason)) {
           console.warn("[chat:message:change-failed]", {
             messageId: id,
             mediaType: row.mediaType ?? null,

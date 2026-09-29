@@ -16,14 +16,28 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Firebase Auth treats emails case-insensitively, so "A@x.com" and "a@x.com"
+  // are the SAME account. Normalizing before the call means one canonical
+  // spelling is used for the duplicate check, and the address the user retypes
+  // can no longer dodge it by changing case or adding whitespace.
+  function normalizeEmail(raw: string): string {
+    return raw.trim().toLowerCase();
+  }
+
   function getErrorMessage(err: unknown): string {
     if (typeof err === "object" && err !== null && "code" in err) {
       const code = (err as { code?: string }).code;
       if (code === "auth/email-already-in-use") return "An account with this email already exists.";
       if (code === "auth/invalid-email") return "Please enter a valid email address.";
       if (code === "auth/weak-password") return "Password should be at least 6 characters long.";
+      if (code === "auth/operation-not-allowed") {
+        return "Email/password sign-up is currently disabled. Contact support.";
+      }
       if (code === "auth/network-request-failed") {
         return "Network error. Please check your internet connection.";
+      }
+      if (code === "auth/too-many-requests") {
+        return "Too many attempts. Please wait a moment and try again.";
       }
     }
     return "Account creation failed. Please try again.";
@@ -34,8 +48,13 @@ export default function SignupPage() {
     if (busy) return;
     setError("");
 
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail || !/^\S+@\S+\.\S+$/.test(trimmedEmail)) {
+    // Authoritative uniqueness source is Firebase Authentication itself:
+    // createUserWithEmailAndPassword is the ONLY check performed here. There is
+    // deliberately no /users/{uid} or RTDB pre-check — deleting an application
+    // profile does not delete the auth account, and querying app data would
+    // produce a false "already exists" for an email that is genuinely free.
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail || !/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
       setError("Please enter a valid email address.");
       return;
     }
@@ -50,7 +69,7 @@ export default function SignupPage() {
 
     setBusy(true);
     try {
-      await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+      await createUserWithEmailAndPassword(auth, normalizedEmail, password);
       router.replace("/profile-setup");
     } catch (err) {
       setError(getErrorMessage(err));
@@ -79,7 +98,12 @@ export default function SignupPage() {
           label="Email"
           type="email"
           value={email}
-          onChange={setEmail}
+          // Clear any stale error as soon as the field is edited — otherwise a
+          // resolved "already exists" message lingers next to a new address.
+          onChange={(v) => {
+            setEmail(v);
+            if (error) setError("");
+          }}
           placeholder="you@example.com"
           autoComplete="email"
           required
