@@ -34,7 +34,13 @@ import { GifPicker } from "@/components/GifPicker";
 import { CameraCapture } from "@/components/CameraCapture";
 import { BrandMark, Icon } from "@/components/Icon";
 import type { ConversationMode, DecryptedMessage, StoredMessage, RoomMeta } from "@/types/chat";
-import { markChatRead, touchChatMeta, subscribeProfile, subscribeUserSettings } from "@/lib/userService";
+import { classifyDecryptFailure } from "@/lib/decryptError";
+import {
+  markChatRead,
+  touchChatMeta,
+  subscribeProfile,
+  subscribeUserSettings,
+} from "@/lib/userService";
 import type { UserProfile } from "@/types/user";
 import {
   receiveMessageV3,
@@ -43,6 +49,8 @@ import {
   MessageDTOV3,
 } from "@/lib/messageCryptoV2";
 import { acquireV2RoomKey, ensureRoomKeyEnvelopesForMembers } from "@/lib/roomKeyService";
+
+const contextSessionRef = useRef(-1);
 
 const MEDIA_EXPIRY_MS = 30_000;
 const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
@@ -435,6 +443,10 @@ function ChatInner() {
   const { user } = useAuth();
   const { key, keyword, lock, isV2, epoch, deviceId, identityPrivateKey, unlockV2 } = useCrypto();
   const [unlockingV2, setUnlockingV2] = useState(false);
+  // Session generation guard: increments when the auth UID or room changes,
+  // causing in-flight decrypt operations to cancel (no-op) instead of
+  // updating state for a new account/room.
+  const [sessionId, setSessionId] = useState(0);
 
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [input, setInput] = useState("");
@@ -565,6 +577,7 @@ function ChatInner() {
   const notifyMutedRef = useRef(false);
   const settingsSoundsRef = useRef(true);
   const browserNotifyRef = useRef(false);
+  const contextSessionRef = useRef(-1);
   const roomLabelRef = useRef("Private room");
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
@@ -876,7 +889,25 @@ function ChatInner() {
     settingsSoundsRef.current = settingsSoundsOn;
     browserNotifyRef.current = browserNotifyOn;
     roomLabelRef.current = friendProfile?.displayName ?? "Private room";
-  });
+    // Session guard: track context changes so stale in-flight decrypts
+    // from a previous account/room/key can be recognised and no-op.
+    contextSessionRef.current = sessionId;
+  }, [key, roomId, user?.uid]);
+
+  useEffect(() => {
+    if (!key || !user) return;
+    // Increment session id when context changes (user, room, or key) so that
+    // in-flight callbacks from the previous context no-op instead of mutating
+    // current UI state. We track the previous session id to avoid incrementing
+    // on the initial mount.
+    const firstRun = contextSessionRef.current === -1;
+    if (!firstRun && contextSessionRef.current !== sessionId) {
+      setSessionId((c) => c + 1);
+    }
+    contextSessionRef.current = sessionId;
+    // Mark as "started" so firstRun logic works on subsequent runs
+    if (firstRun) contextSessionRef.current = -1;
+  }, [key, roomId, user?.uid]);
 
   // Account-level sound switch: Settings → Notifications → Messages gates the
   // same chat sounds as the in-chat mute (existing subscription API only).
@@ -896,9 +927,7 @@ function ChatInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!key || !user) return;
-    // Stable string identity for everything below. (`user` itself is read here
-    // for narrowing only; the effect dep is `user?.uid` so object churn can't
-    // re-subscribe the listener.)
+    const currentSession = sessionId;
     const uid = user.uid;
     const cryptoKey = key; // capture non-null for use inside async callbacks
     const msgsPath = `rooms/${roomId}/messages`;
@@ -911,6 +940,7 @@ function ChatInner() {
       localEchoes.current.clear();
       notifiedIds.current.clear();
       sendSeqFloor.current = { roomId: "", epoch: 0, value: 0 };
+      setSessionId((c) => c + 1);
     }
 
     // Cutover between history replay and live arrivals for THIS subscription.
@@ -939,6 +969,15 @@ function ChatInner() {
     // Decrypt a single stored row, reuse cached blob URL if media payload unchanged
     async function decryptRowPayload(id: string, row: StoredMessage): Promise<{ msg: DecryptedMessage; decryptOk: boolean; fresh: boolean }> {
       const rowAny = row as any;
+
+      // Only process if this callback belongs to the current session.
+      // Old in-flight callbacks from a previous account/room will no-op here.
+      if (currentSession !== sessionId) {
+        console.info("[chat:decrypt:stale-session]", { messageId: id, sessionMismatch: currentSession, currentSession: sessionId });
+        return Promise.resolve({ msg: { ...row, id, plaintext: "Unable to decrypt message." }, decryptOk: false, fresh: false });
+      }
+
+      // ── Sequence floor (metadata only, runs before any crypto) ────────────
 
       // ── Sequence floor (metadata only, runs before any crypto) ────────────
       // Count this device's OWN highest V3 sequence number from the row as
@@ -1045,8 +1084,22 @@ function ChatInner() {
           });
           decryptOk = true;
         } catch (err) {
-          // Safe diagnostics: identifiers and stage markers only, never secrets.
-          console.warn("[chat:v3-decrypt-failed]", {
+          // Classify the failure stage for diagnostics without leaking secrets.
+          const classification = classifyDecryptFailure(err, {
+            messageId: rowAny.messageId ?? id,
+            senderUid: rowAny.senderUid,
+            senderDeviceId: rowAny.senderDeviceId,
+            roomId,
+            currentUid: uid,
+            currentDeviceId: deviceId,
+            epoch: rowAny.epoch,
+            sequenceNumber: rowAny.sequenceNumber,
+            cryptoVersion: rowAny.cryptoVersion,
+            isV2: isV2,
+            failureStage: "decrypt",
+          });
+          // Safe diagnostics: identifiers and category only — never secret data.
+          console.warn(`[chat:v3-decrypt-failed:${classification.category}]`, {
             messageId: rowAny.messageId ?? id,
             senderUid: rowAny.senderUid,
             senderDeviceId: rowAny.senderDeviceId,
@@ -1054,7 +1107,7 @@ function ChatInner() {
             currentDeviceId: deviceId,
             epoch: rowAny.epoch,
             sequenceNumber: rowAny.sequenceNumber,
-            error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+            reason: classification.reason,
           });
           plaintext = "Unable to decrypt message.";
         }

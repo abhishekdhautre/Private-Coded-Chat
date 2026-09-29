@@ -232,14 +232,33 @@ function FriendsInner() {
   const [incoming, setIncoming] = useState<FriendRequest[]>([]);
   const [outgoing, setOutgoing] = useState<FriendRequest[]>([]);
   const [filter, setFilter] = useState("");
+  // Session generation guard: prevents old subscription callbacks from
+  // updating state after the auth UID changes. Changes when the user
+  // logs in/out or switches accounts, causing in-flight listeners to
+  // no-op instead of mutating the new account's state.
+  const [sessionId, setSessionId] = useState(0);
 
   useEffect(() => {
     if (!user) return;
-    const unsub1 = subscribeFriends(user.uid, setFriendUids);
-    const unsub2 = subscribeIncomingRequests(user.uid, setIncoming);
-    const unsub3 = subscribeOutgoingRequests(user.uid, setOutgoing);
-    return () => { unsub1(); unsub2(); unsub3(); };
-  }, [user]);
+    const currentSession = sessionId;
+    const unsub1 = subscribeFriends(user.uid, (uids) => {
+      // Only update state if this callback belongs to the current session
+      if (currentSession === sessionId) setFriendUids(uids);
+    });
+    const unsub2 = subscribeIncomingRequests(user.uid, (reqs) => {
+      if (currentSession === sessionId) setIncoming(reqs);
+    });
+    const unsub3 = subscribeOutgoingRequests(user.uid, (reqs) => {
+      if (currentSession === sessionId) setOutgoing(reqs);
+    });
+    // Increment session id on UID change so in-flight old callbacks no-op
+    if (user) setSessionId((c) => c + 1);
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+    };
+  }, [user, sessionId]);
 
   const incomingCount = incoming.length;
   const outgoingCount = outgoing.length;
